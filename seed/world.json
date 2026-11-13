@@ -1,0 +1,364 @@
+{
+  "host": {
+    "id": "host_demo",
+    "name": "Alex Popescu",
+    "rules": {
+      "check_in_time": "15:00",
+      "check_out_time": "11:00",
+      "early_check_in_earliest": "12:00",
+      "late_check_out_latest": "13:00",
+      "pets_allowed": false,
+      "smoking_allowed": false,
+      "parties_allowed": false,
+      "quiet_hours": "22:00-08:00",
+      "last_minute_window_days": 7,
+      "max_relist_discount_pct": 25,
+      "house_notes": [
+        "Self check-in with a lockbox; the code is sent on the morning of arrival.",
+        "Early check-in and late check-out are never guaranteed and need the host's confirmation.",
+        "Extra guests beyond the booking are not allowed."
+      ]
+    }
+  },
+  "staff": [
+    {
+      "id": "staff_maria",
+      "name": "Maria Ionescu",
+      "role": "cleaner",
+      "property_external_ids": ["MOCK-PROP-1", "MOCK-PROP-2", "MOCK-PROP-3"]
+    },
+    {
+      "id": "staff_andrei",
+      "name": "Andrei Stan",
+      "role": "maintenance",
+      "property_external_ids": ["MOCK-PROP-1", "MOCK-PROP-2", "MOCK-PROP-3", "MOCK-PROP-4"]
+    },
+    {
+      "id": "staff_ioana",
+      "name": "Ioana Radu",
+      "role": "cleaner",
+      "property_external_ids": ["MOCK-PROP-4"]
+    }
+  ],
+  "properties": [
+    {
+      "external_id": "MOCK-PROP-1",
+      "name": "Old Town Studio",
+      "city": "Bucharest",
+      "address": "Strada Lipscani 12, Bucharest",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in"],
+      "base_price": 70,
+      "currency": "EUR"
+    },
+    {
+      "external_id": "MOCK-PROP-2",
+      "name": "Calea Victoriei Apartment",
+      "city": "Bucharest",
+      "address": "Calea Victoriei 88, Bucharest",
+      "bedrooms": 1,
+      "max_guests": 3,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony"],
+      "base_price": 85,
+      "currency": "EUR"
+    },
+    {
+      "external_id": "MOCK-PROP-3",
+      "name": "Herastrau Family Flat",
+      "city": "Bucharest",
+      "address": "Soseaua Nordului 54, Bucharest",
+      "bedrooms": 2,
+      "max_guests": 5,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony", "parking"],
+      "base_price": 120,
+      "currency": "EUR"
+    },
+    {
+      "external_id": "MOCK-PROP-4",
+      "name": "Brasov Mountain View Loft",
+      "city": "Brasov",
+      "address": "Strada Republicii 21, Brasov",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen", "heating", "parking", "fireplace"],
+      "base_price": 90,
+      "currency": "EUR"
+    }
+  ],
+  "reservations": [
+    {
+      "external_id": "MOCK-RES-1001",
+      "property_external_id": "MOCK-PROP-1",
+      "guest_name": "Emma Johnson",
+      "guest_count": 2,
+      "check_in_offset_days": 2,
+      "nights": 3,
+      "status": "confirmed",
+      "source_channel": "airbnb",
+      "total_price": 210
+    },
+    {
+      "external_id": "MOCK-RES-1002",
+      "property_external_id": "MOCK-PROP-2",
+      "guest_name": "Lukas Mueller",
+      "guest_count": 2,
+      "check_in_offset_days": -1,
+      "nights": 4,
+      "status": "confirmed",
+      "source_channel": "booking_com",
+      "total_price": 340
+    },
+    {
+      "external_id": "MOCK-RES-1003",
+      "property_external_id": "MOCK-PROP-3",
+      "guest_name": "Sofia Rossi",
+      "guest_count": 4,
+      "check_in_offset_days": 10,
+      "nights": 5,
+      "status": "confirmed",
+      "source_channel": "airbnb",
+      "total_price": 600
+    },
+    {
+      "external_id": "MOCK-RES-1004",
+      "property_external_id": "MOCK-PROP-4",
+      "guest_name": "James Carter",
+      "guest_count": 2,
+      "check_in_offset_days": 5,
+      "nights": 2,
+      "status": "confirmed",
+      "source_channel": "vrbo",
+      "total_price": 180
+    },
+    {
+      "external_id": "MOCK-RES-1005",
+      "property_external_id": "MOCK-PROP-1",
+      "guest_name": "Marie Dubois",
+      "guest_count": 1,
+      "check_in_offset_days": 20,
+      "nights": 4,
+      "status": "confirmed",
+      "source_channel": "direct",
+      "total_price": 280
+    },
+    {
+      "external_id": "MOCK-RES-1006",
+      "property_external_id": "MOCK-PROP-2",
+      "guest_name": "Daniel Kim",
+      "guest_count": 2,
+      "check_in_offset_days": -12,
+      "nights": 3,
+      "status": "confirmed",
+      "source_channel": "airbnb",
+      "total_price": 255
+    },
+    {
+      "external_id": "MOCK-RES-1007",
+      "property_external_id": "MOCK-PROP-4",
+      "guest_name": "Anna Kowalska",
+      "guest_count": 2,
+      "check_in_offset_days": 30,
+      "nights": 3,
+      "status": "cancelled",
+      "source_channel": "airbnb",
+      "total_price": 270
+    }
+  ],
+  "reviews": [
+    {
+      "external_id": "MOCK-REV-101",
+      "property_external_id": "MOCK-PROP-1",
+      "rating": 5,
+      "text": "Spotless studio in a perfect location. Everything was exactly as described.",
+      "author": "Hannah",
+      "days_ago": 9
+    },
+    {
+      "external_id": "MOCK-REV-102",
+      "property_external_id": "MOCK-PROP-1",
+      "rating": 3,
+      "text": "Great area, but the wifi kept dropping during my video calls and it was slow in the evening.",
+      "author": "Tom",
+      "days_ago": 21
+    },
+    {
+      "external_id": "MOCK-REV-103",
+      "property_external_id": "MOCK-PROP-1",
+      "rating": 3,
+      "text": "Check-in was confusing: it took us 20 minutes to find the lockbox and the instructions were unclear.",
+      "author": "Priya",
+      "days_ago": 34
+    },
+    {
+      "external_id": "MOCK-REV-104",
+      "property_external_id": "MOCK-PROP-1",
+      "rating": 4,
+      "text": "Lovely place and a helpful host. The street is noisy at night on weekends, bring earplugs.",
+      "author": "Marco",
+      "days_ago": 48
+    },
+    {
+      "external_id": "MOCK-REV-105",
+      "property_external_id": "MOCK-PROP-1",
+      "rating": 4,
+      "text": "Comfortable and clean. Wifi was slow, otherwise a great stay.",
+      "author": "Ines",
+      "days_ago": 63
+    },
+    {
+      "external_id": "MOCK-REV-201",
+      "property_external_id": "MOCK-PROP-2",
+      "rating": 5,
+      "text": "The balcony view is wonderful and the host answered every question within minutes.",
+      "author": "Oliver",
+      "days_ago": 6
+    },
+    {
+      "external_id": "MOCK-REV-202",
+      "property_external_id": "MOCK-PROP-2",
+      "rating": 3,
+      "text": "The air conditioning was loud and the bathroom was not properly clean when we arrived.",
+      "author": "Chloe",
+      "days_ago": 18
+    },
+    {
+      "external_id": "MOCK-REV-203",
+      "property_external_id": "MOCK-PROP-2",
+      "rating": 4,
+      "text": "Central and stylish. There was some dust under the bed, but overall very good.",
+      "author": "Mateo",
+      "days_ago": 40
+    },
+    {
+      "external_id": "MOCK-REV-301",
+      "property_external_id": "MOCK-PROP-3",
+      "rating": 5,
+      "text": "Perfect for our family of four. Parking was easy and the kitchen had everything.",
+      "author": "Julia",
+      "days_ago": 12
+    },
+    {
+      "external_id": "MOCK-REV-302",
+      "property_external_id": "MOCK-PROP-3",
+      "rating": 4,
+      "text": "Spacious flat near the park. One mattress was too soft and the hot water ran out quickly.",
+      "author": "Ethan",
+      "days_ago": 27
+    },
+    {
+      "external_id": "MOCK-REV-303",
+      "property_external_id": "MOCK-PROP-3",
+      "rating": 5,
+      "text": "Great stay, quiet neighbourhood, very clean.",
+      "author": "Nora",
+      "days_ago": 55
+    },
+    {
+      "external_id": "MOCK-REV-401",
+      "property_external_id": "MOCK-PROP-4",
+      "rating": 5,
+      "text": "The fireplace and the mountain view made our weekend. Would come back.",
+      "author": "Victor",
+      "days_ago": 15
+    },
+    {
+      "external_id": "MOCK-REV-402",
+      "property_external_id": "MOCK-PROP-4",
+      "rating": 3,
+      "text": "Beautiful loft but the heating took hours to warm the place and the hot water was lukewarm.",
+      "author": "Elena",
+      "days_ago": 31
+    },
+    {
+      "external_id": "MOCK-REV-403",
+      "property_external_id": "MOCK-PROP-4",
+      "rating": 4,
+      "text": "Cozy and well located. The key handover was a bit confusing, a lockbox would help.",
+      "author": "Sam",
+      "days_ago": 70
+    }
+  ],
+  "comparables": [
+    {
+      "ref": "MOCK-CMP-1",
+      "title": "Lipscani Cozy Studio",
+      "city": "Bucharest",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in"],
+      "nightly_price": 68,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-2",
+      "title": "Unirii Budget Room",
+      "city": "Bucharest",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen"],
+      "nightly_price": 45,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-3",
+      "title": "Old Town Design Studio",
+      "city": "Bucharest",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony"],
+      "nightly_price": 74,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-4",
+      "title": "Victoriei Central Flat",
+      "city": "Bucharest",
+      "bedrooms": 1,
+      "max_guests": 3,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony"],
+      "nightly_price": 88,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-5",
+      "title": "Herastrau Park Residence",
+      "city": "Bucharest",
+      "bedrooms": 2,
+      "max_guests": 5,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony", "parking"],
+      "nightly_price": 125,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-6",
+      "title": "Floreasca Family Home",
+      "city": "Bucharest",
+      "bedrooms": 2,
+      "max_guests": 4,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "parking"],
+      "nightly_price": 99,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-7",
+      "title": "Brasov Old Center Loft",
+      "city": "Brasov",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "kitchen", "heating", "parking", "fireplace"],
+      "nightly_price": 84,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-8",
+      "title": "Brasov Budget Studio",
+      "city": "Brasov",
+      "bedrooms": 1,
+      "max_guests": 2,
+      "amenities": ["wifi", "heating"],
+      "nightly_price": 55,
+      "currency": "EUR"
+    }
+  ]
+}

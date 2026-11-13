@@ -1,0 +1,3 @@
+# Setările Streamlit ale proiectului (aceleași pentru toată echipa).
+[browser]
+gatherUsageStats = false

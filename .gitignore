@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Date locale și secrete
+.env
+data/
+
+# Node / extensie
+node_modules/
+extension/.output/
+extension/.wxt/
+
+# Sistem / editoare
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/settings.local.json

@@ -1,0 +1,9 @@
+# Dependențele stau în requirements.txt / requirements-dev.txt.
+# Aici e doar configurația uneltelor.
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "app/features"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib -q"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

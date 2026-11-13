@@ -1,0 +1,5 @@
+# Aceleași sfârșituri de linie pe Windows și macOS, ca să nu apară diff-uri false.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.gz binary
