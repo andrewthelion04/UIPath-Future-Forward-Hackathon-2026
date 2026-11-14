@@ -53,6 +53,45 @@ export interface Approval {
   created_at: string;
 }
 
+export type IncidentStatus =
+  | 'awaiting_staff'
+  | 'awaiting_decision'
+  | 'awaiting_guest'
+  | 'remediation_scheduled'
+  | 'relocated'
+  | 'dismissed'
+  | 'resolved';
+
+export interface StaffTask {
+  id: string;
+  description: string;
+  status: 'open' | 'done';
+  staff_name: string | null;
+  completion_note: string | null;
+  completed_at: string | null;
+}
+
+export interface Incident {
+  id: string;
+  property_id: string;
+  booking_id: string | null;
+  description: string;
+  reporter: string;
+  reported_via: string;
+  severity: string;
+  status: IncidentStatus;
+  report_count: number;
+  relocation_property_id: string | null;
+  eta_hours: number | null;
+  eta_source: string | null;
+  recommendation: string | null;
+  recommendation_reason: string | null;
+  guest_answer: string | null;
+  resolution: string | null;
+  tasks: StaffTask[];
+  updated_at: string;
+}
+
 export interface DecisionResult {
   approval: Approval;
   applied: boolean;
@@ -80,6 +119,7 @@ export const api = {
   properties: () => request<Property[]>('/properties'),
   notifications: () => request<Notification[]>('/notifications'),
   approvals: () => request<Approval[]>('/approvals'),
+  incidents: () => request<Incident[]>('/incidents'),
   decide: (approvalId: string, decision: 'approve' | 'reject', option?: string) =>
     request<DecisionResult>(`/approvals/${approvalId}/decision`, {
       method: 'POST',

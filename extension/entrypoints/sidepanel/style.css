@@ -163,6 +163,23 @@ fieldset {
 .option small {
   display: block;
   color: var(--muted);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.tasks {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.tasks li {
+  margin: 2px 0;
+}
+
+.tasks .note {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .actions {

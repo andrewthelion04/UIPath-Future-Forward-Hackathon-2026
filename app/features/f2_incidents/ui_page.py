@@ -1,15 +1,32 @@
-"""Pagina F2: incidentele și starea lor. Consumă doar API-ul REST."""
+"""Pagina F2: incidentele, conversația agentului cu personalul, sarcinile. Consumă doar API-ul REST.
+
+Pagina doar citește: deciziile hostului se iau din inboxul de aprobări, iar personalul și
+oaspetele sunt simulați automat (setările `F2_SIM_*`).
+"""
 
 from __future__ import annotations
 
 import streamlit as st
 
-from ui.components import load, property_names, short_time, status_badge
+from ui.components import load, multiline, property_names, short_time, status_badge
+
+STATUS_HELP = {
+    "awaiting_staff": "The agent asked maintenance how long the fix takes.",
+    "awaiting_decision": "The proposal is in the host's approval inbox.",
+    "awaiting_guest": "The relocation offer was sent; waiting for the guest's answer.",
+    "remediation_scheduled": "The repair task is with the staff.",
+    "relocated": "The guest moved; the repair task is with the staff.",
+    "resolved": "The host approved closing the incident.",
+    "dismissed": "The host dismissed the incident.",
+}
+GUEST_ANSWERS = {"accept": "accepted the move", "stay": "preferred to stay", "timeout": "did not answer (stays)"}
 
 st.title("F2 · Incidents")
 st.caption(
-    "A report from staff or from a guest opens an incident. The host chooses between fixing it "
-    "in time and relocating the guest; nothing happens before that decision."
+    "A report from staff or from a guest opens an incident. The agent asks maintenance how "
+    "long the fix takes, then proposes relocating the guest or fixing in place, with the exact "
+    "guest messages. Nothing reaches the guest before the host approves. Staff and guest answers "
+    "are simulated in the demo."
 )
 
 incidents = load("/incidents")
@@ -24,15 +41,59 @@ for incident in incidents:
         st.markdown(f"**{names.get(incident['property_id'], incident['property_id'])}**")
         status_badge(incident["status"])
         st.markdown(incident["description"])
+        st.caption(STATUS_HELP.get(incident["status"], ""))
+
         details = [
             f"reported by {incident['reporter'] or 'unknown'} ({incident['reported_via']})",
             f"severity {incident['severity']}",
         ]
+        if incident.get("report_count", 1) > 1:
+            details.append(f"{incident['report_count']} reports")
         if incident["booking_id"]:
             details.append(f"affects {guests.get(incident['booking_id'], incident['booking_id'])}")
         if incident["relocation_property_id"]:
             details.append(f"relocation option: {names.get(incident['relocation_property_id'], '?')}")
         st.caption(" · ".join(details))
+
+        facts = []
+        if incident.get("eta_source"):
+            eta = incident.get("eta_hours")
+            facts.append(f"Fix estimate: {f'{eta:g} h' if eta else 'unknown'} ({incident['eta_source']})")
+        if incident.get("recommendation"):
+            facts.append(f"Recommendation: {incident['recommendation']}. {incident.get('recommendation_reason') or ''}")
+        if incident.get("guest_answer"):
+            facts.append(f"Guest {GUEST_ANSWERS.get(incident['guest_answer'], incident['guest_answer'])}.")
         if incident["resolution"]:
-            st.markdown(f"Resolution: {incident['resolution']}")
-        st.caption(f"opened {short_time(incident['created_at'])} UTC · updated {short_time(incident['updated_at'])} UTC")
+            facts.append(f"Resolution: {incident['resolution']}")
+        if facts:
+            st.markdown(multiline("\n".join(facts)))
+
+        if incident.get("reports") and len(incident["reports"]) > 1:
+            with st.expander(f"Reports ({len(incident['reports'])})"):
+                for report in incident["reports"]:
+                    st.markdown(
+                        f"- {short_time(report['created_at'])} · {report['reporter'] or report['reported_via']}: "
+                        f"{report['description']}"
+                    )
+
+        messages = incident.get("staff_messages") or []
+        if messages:
+            with st.expander(f"Conversation with staff ({len(messages)})"):
+                for message in messages:
+                    who = "Agent" if message["direction"] == "to_staff" else message["staff_name"] or "Staff"
+                    tag = " (simulated)" if message.get("simulated") else ""
+                    st.markdown(f"**{who}{tag}** · {short_time(message['created_at'])}  \n{message['body']}")
+
+        tasks = incident.get("tasks") or []
+        if tasks:
+            st.markdown("**Tasks**")
+            for task in tasks:
+                done = task["status"] == "done"
+                line = f"{'✅' if done else '🛠️'} `{task['id']}` {task['description']} · {task['staff_name'] or 'unassigned'}"
+                if done and task.get("completion_note"):
+                    line += f"  \n  _{task['completion_note']}_"
+                st.markdown(line)
+
+        st.caption(
+            f"opened {short_time(incident['created_at'])} UTC · updated {short_time(incident['updated_at'])} UTC"
+        )

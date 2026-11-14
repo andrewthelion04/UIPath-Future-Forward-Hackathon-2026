@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import ApprovalsInbox from '@/components/ApprovalsInbox';
+import IncidentsList, { isOpen } from '@/components/IncidentsList';
 import NotificationsList from '@/components/NotificationsList';
 import PropertiesList from '@/components/PropertiesList';
-import { api, API_URL, type Approval, type Notification, type Property } from '@/lib/api';
+import {
+  api,
+  API_URL,
+  type Approval,
+  type Incident,
+  type Notification,
+  type Property,
+} from '@/lib/api';
 
-type Tab = 'approvals' | 'notifications' | 'properties';
+type Tab = 'approvals' | 'notifications' | 'incidents' | 'properties';
 
 const REFRESH_MS = 5000;
 
@@ -14,19 +22,22 @@ export default function App() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [nextApprovals, nextNotifications, nextProperties] = await Promise.all([
+      const [nextApprovals, nextNotifications, nextProperties, nextIncidents] = await Promise.all([
         api.approvals(),
         api.notifications(),
         api.properties(),
+        api.incidents(),
       ]);
       setApprovals(nextApprovals);
       setNotifications(nextNotifications);
       setProperties(nextProperties);
+      setIncidents(nextIncidents);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -45,6 +56,7 @@ export default function App() {
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: 'approvals', label: 'Approvals', count: approvals.length },
     { id: 'notifications', label: 'Notifications', count: unread },
+    { id: 'incidents', label: 'Incidents', count: incidents.filter(isOpen).length },
     { id: 'properties', label: 'Properties', count: 0 },
   ];
 
@@ -87,6 +99,7 @@ export default function App() {
               onError={setError}
             />
           )}
+          {tab === 'incidents' && <IncidentsList incidents={incidents} properties={properties} />}
           {tab === 'properties' && <PropertiesList properties={properties} />}
         </section>
       )}
