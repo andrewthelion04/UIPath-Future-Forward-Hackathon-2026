@@ -199,6 +199,7 @@ class Container:
                 csv_path=s.inside_airbnb_listings_csv,
                 city=s.market_city,
                 currency=s.market_currency,
+                usd_to_currency_rate=s.market_usd_to_currency_rate,
             )
         return MockMarketAdapter(self.mock_world)
 

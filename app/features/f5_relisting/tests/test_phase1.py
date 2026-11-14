@@ -55,7 +55,8 @@ def test_invalid_host_discount_is_rejected(discount):
 
 @pytest.mark.parametrize("values", [
     {"undercut_pct": -1}, {"undercut_pct": 100}, {"market_timeout_s": 0},
-    {"calendar_timeout_s": float("nan")},
+    {"calendar_timeout_s": float("nan")}, {"last_minute_window_hours": 0},
+    {"last_minute_window_hours": 8761},
 ])
 def test_invalid_feature_settings_fail_fast(values):
     with pytest.raises(ValidationError):

@@ -908,10 +908,10 @@ async def test_inside_airbnb_is_selected_from_config_and_feeds_relisting(tmp_pat
 
         candidates = await container.market.find_comparables(query)
 
-        assert [(c.ref, c.nightly_price) for c in candidates] == [("102", 45.0), ("101", 68.0)]
+        assert [(c.ref, c.nightly_price) for c in candidates] == [("102", 41.4), ("101", 62.56)]
         assert all((c.city, c.source) == ("Vienna", "inside_airbnb") for c in candidates)
         best = cheapest_comparable(candidates, studio)
-        assert (best.title, best.nightly_price) == ("Central Studio", 68.0)  # cel de 45 nu are facilitățile
+        assert (best.title, best.nightly_price) == ("Central Studio", 62.56)  # preț USD convertit; cel ieftin nu are facilitățile
         assert best.url == "https://www.airbnb.com/rooms/101"
 
         await container.reset_world()  # resetul lumii nu pierde datele de piață

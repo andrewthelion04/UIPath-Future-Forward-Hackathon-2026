@@ -6,6 +6,8 @@ from fastapi import APIRouter, Query
 
 from app.core.contracts.events import BookingCancelled
 from app.core.feature_context import FeatureContext
+from app.features.f5_relisting.agents import AGENT_NAME
+from app.features.f5_relisting.mock_llm import policy
 from app.features.f5_relisting.relisting import APPROVAL_KIND, Relisting, RelistProposal
 
 
@@ -21,6 +23,7 @@ def build_router(relisting: Relisting) -> APIRouter:
 
 def register(ctx: FeatureContext) -> None:
     relisting = Relisting(ctx)
+    ctx.register_mock_llm_policy(AGENT_NAME, policy)
     ctx.subscribe(BookingCancelled, relisting.on_booking_cancelled)
     ctx.on_decision(APPROVAL_KIND, relisting.on_decision)
     ctx.include_router(build_router(relisting))

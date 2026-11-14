@@ -11,7 +11,7 @@ st.caption(
     "After a last-minute cancellation, the cheapest comparable listing with the same amenities "
     "sets the reference. Nightly prices keep the calendar's proportions, respect each night's "
     "host floor and regular price, expire at check-in, and "
-    "reaches the calendar only after approval."
+    "reach the calendar only after approval."
 )
 
 proposals = load("/f5/proposals")
@@ -49,13 +49,15 @@ for proposal in proposals:
                  "Host floor": n["floor_price"], "Proposed price": n["proposed_price"],
                  "Currency": currency}
                 for n in nightly
-            ], hide_index=True)
+            ], hide_index=True, alt="Approved nightly prices with original prices and host floors")
         if proposal.get("expires_at"):
             st.caption(f"Expires at check-in: {proposal['expires_at']}")
         if proposal["status"] == "expired":
             st.warning("This proposal has expired. Approving it will leave the calendar unchanged.")
         elif proposal["status"] == "conflict":
             st.warning("The calendar changed after this proposal. Review the nights in your PMS.")
+        elif proposal["status"] == "failed":
+            st.warning("Relisting could not be completed. Review the details and calendar in your PMS.")
         details = [f"cancelled by {guests.get(proposal['booking_id'], proposal['booking_id'])}"]
         if proposal["comparable_title"]:
             details.append(f"comparable: {proposal['comparable_title']}")

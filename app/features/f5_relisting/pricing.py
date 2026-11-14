@@ -99,6 +99,6 @@ def distribute_prices(
         price = _money(Decimal(str(day.price)) * factor)
         result.append(NightlyPrice(
             day=day.day, original_price=day.price, floor_price=floor,
-            proposed_price=cap_price(max(price, floor), day.price),
+            proposed_price=cap_price(max(0.01, price, floor), day.price),
         ))
     return result

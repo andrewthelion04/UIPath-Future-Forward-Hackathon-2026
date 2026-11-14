@@ -6,7 +6,7 @@ Team Members: Tudor Popanica, Mihaela Tudor, Andu Bădescu, Leu Petrișor, Lunc�
 
 **StayPilot AI** este un copilot pentru hosturile care gestionează rezervări printr-un PMS. Ține hostul la curent și îi cere aprobarea pentru acțiunile importante.
 
-Acest repo conține **scheletul**: aplicația rulează local, complet pe un mediu simulat, fără niciun API extern și fără nicio cheie. Cele cinci fluxuri (F1–F5) funcționează cap-coadă și pot fi urmărite în interfață.
+Acest repo conține **scheletul**: aplicația rulează local fără chei sau API-uri externe. PMS/LLM/recenziile sunt mock; F5 folosește implicit fixture-ul local Inside Airbnb pentru piață. Cele cinci fluxuri (F1–F5) funcționează cap-coadă și pot fi urmărite în interfață.
 
 - Ce construim și regulile proiectului: [`CLAUDE.md`](CLAUDE.md)
 - Deciziile de arhitectură, abaterile și riscurile: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -50,7 +50,7 @@ La prima pornire, API-ul populează singur lumea simulată. Nu trebuie activat m
 | F3 → F2 | *Guest chat* → „Report a problem” | Evenimentul `IssueReported` în *Events* și incidentul în *F2 · Incidents* |
 | F2 | *Staff report* | Aprobarea cu opțiunile remediere / relocare |
 | F4 | *Review analysis* | Recomandările din *Notifications* și din *F4 · Review Analysis* |
-| F5 | *Cancel booking* → Emma Johnson | Prețul propus în *Approvals*; după aprobare, calendarul din *World data* |
+| F5 | *Cancel booking* → Emma Johnson | *Agent timeline* și notificări F5; propunere în *Approvals*; după aprobare, calendarul din *World data* |
 | Reset | *Reset world* | Lumea revine la starea din seed |
 
 Pagina *F1 · Pms Integration* are un tester de webhook cu payload-uri de exemplu: mesaj de la oaspete, duplicat, ecoul propriului mesaj (filtrul anti-buclă), rezervare nemapată.
@@ -78,14 +78,14 @@ docs/ARCHITECTURE.md
 
 ## Comutarea mock ↔ real
 
-Totul se comută din `.env`, fără nicio modificare în cod. Schema și valorile implicite sunt în [`app/config.py`](app/config.py); `.env.example` listează variabilele.
+Totul se comută din `.env`, fără nicio modificare în cod. Schema și valorile implicite sunt în [`app/config.py`](app/config.py); `.env.example` listează variabilele. Providerul implicit de piață citește eșantionul local Atena; nu este o sursă live și nu reprezintă piața București.
 
 | Dependență | Variabilă | Valori | Ce mai trebuie setat pentru varianta reală |
 |---|---|---|---|
 | PMS (proprietăți, rezervări, mesaje, calendar) | `PMS_PROVIDER` | `mock`, `hospitable`, `ownerrez` | `HOSPITABLE_API_TOKEN`, respectiv `OWNERREZ_ACCESS_TOKEN` (sau `OWNERREZ_USERNAME` + `OWNERREZ_PERSONAL_TOKEN`) și `OWNERREZ_ENV=stage\|production` |
 | LLM | `LLM_PROVIDER` | `mock`, `openrouter` | `OPENROUTER_API_KEY`, `LLM_MODEL`; opțional `LLM_MODEL_UTILITY` |
 | Recenzii | `REVIEWS_PROVIDER` | `mock`, `apify` | `APIFY_TOKEN`, `APIFY_REVIEWS_ACTOR_ID`; opțional `APIFY_REVIEWS_INPUT_TEMPLATE` |
-| Date de piață | `MARKET_PROVIDER` | `mock`, `inside_airbnb` | `INSIDE_AIRBNB_LISTINGS_CSV` (calea către `listings.csv` sau `listings.csv.gz`), `MARKET_CITY`, `MARKET_CURRENCY` |
+| Date de piață | `MARKET_PROVIDER` | `mock`, `inside_airbnb` | `INSIDE_AIRBNB_LISTINGS_CSV` (calea către `listings.csv` sau `listings.csv.gz`), `MARKET_CITY`, `MARKET_CURRENCY`, `MARKET_USD_TO_CURRENCY_RATE` |
 
 - **Fail-fast:** dacă alegi un adaptor real și lipsește un secret, aplicația nu pornește și îți spune exact ce variabilă lipsește.
 - **Conexiunea mock rămâne mereu activă** lângă cea reală, ca simulatorul să funcționeze și operațiile indisponibile în PMS-ul real să poată fi demonstrate pe mock.
@@ -146,3 +146,8 @@ Testele rulează pe mock, cu o bază de date temporară, fără rețea și făr�
 - Când preiei un feature, trece-ți numele în `CLAUDE.md`-ul lui.
 
 Rețeta completă pentru extinderea unui feature este în [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Clarificare F5: prețurile Inside Airbnb sunt în moneda locală; `$` din exportul Atena
+nu indică USD. Fixture-ul include opt rânduri reale și patru sintetice de demo.
+Conversia se aplică doar monedei USD declarate explicit; configurarea și proveniența
+sunt în [README-ul adaptorului](app/adapters/inside_airbnb/README.md).

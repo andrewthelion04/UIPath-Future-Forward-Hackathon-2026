@@ -1,7 +1,7 @@
-"""Configul unic al aplicației: toate comutatoarele mock <-> real și validarea fail-fast.
+"""Configul unic al aplicației: comutatoare de provideri și validare fail-fast.
 
-Schema și valorile implicite stau aici; valorile concrete vin din `.env` (necomis).
-Implicit totul rulează pe mock, fără niciun secret.
+Schema și valorile implicite stau aici; valorile concrete pot veni din `.env` (necomis).
+PMS/LLM/reviews pornesc pe mock; piața F5 folosește un fixture local, fără secrete sau rețea.
 """
 
 from __future__ import annotations
@@ -10,11 +10,14 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import PrivateAttr, SecretStr, ValidationError, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_FILE = ROOT_DIR / ".env"
+DEFAULT_MARKET_FIXTURE = (
+    ROOT_DIR / "app" / "adapters" / "inside_airbnb" / "fixtures" / "athens_2026-09-22.sample.csv"
+)
 
 OWNERREZ_BASE_URLS = {
     "stage": "https://apistage.ownerrez.com",
@@ -35,7 +38,7 @@ class Settings(BaseSettings):
     pms_provider: Literal["mock", "ownerrez", "hospitable"] = "mock"
     llm_provider: Literal["mock", "openrouter"] = "mock"
     reviews_provider: Literal["mock", "apify"] = "mock"
-    market_provider: Literal["mock", "inside_airbnb"] = "mock"
+    market_provider: Literal["mock", "inside_airbnb"] = "inside_airbnb"
 
     # --- Local ---------------------------------------------------------------------
     database_path: Path = ROOT_DIR / "data" / "staypilot.db"
@@ -83,9 +86,10 @@ class Settings(BaseSettings):
     apify_timeout_s: float = 120.0
 
     # --- Inside Airbnb -------------------------------------------------------------
-    inside_airbnb_listings_csv: Path | None = None
-    market_city: str = "configured market city"
+    inside_airbnb_listings_csv: Path | None = DEFAULT_MARKET_FIXTURE
+    market_city: str = "Athens"
     market_currency: str = "EUR"
+    market_usd_to_currency_rate: float = Field(default=0.92, gt=0, allow_inf_nan=False)
 
     _env_file_used: Path | None = PrivateAttr(default=None)
 

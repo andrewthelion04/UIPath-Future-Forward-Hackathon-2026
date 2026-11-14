@@ -11,7 +11,10 @@ La o anulare de ultim moment, caută în datele de piață cel mai ieftin anunț
 - Cereri de aprobare: `relist_price` — schimbarea prețului pentru nopțile eliberate.
 
 ## Stare curentă
-- Faza 1 implementată: anulare → fereastră de ultim moment → snapshot calendar validat → comparabile → tarife proporționale pe nopți → aprobare → recitire calendar → aplicare.
+- Faza 1 implementată: eveniment de anulare → agent F5 (AgentRunner) → verificarea ferestrei/calendarului → căutare comparabile → propunere → aprobare → recitire calendar → aplicare.
+- Agentul are unelte pentru inspectarea anulării, căutarea comparabilelor și pregătirea propunerii; timeline-ul păstrează apelurile și rezultatele. Politica LLM mock oferă același flux determinist fără chei.
+- Rezultatele uneltelor sunt compacte; un model care termină prematur produce notificare de fallback. Sunt testate liste cu 100 de comparabile fără trunchierea JSON-ului.
+- `F5_LAST_MINUTE_WINDOW_HOURS` suprascrie în ore fereastra hostului (implicit 7 zile); compararea folosește ora locală de check-in.
 - Comparabil (`is_comparable`): are cel puțin facilitățile noastre, același număr de dormitoare, loc suficient, aceeași monedă.
 - Preț: comparabilul minus `F5_UNDERCUT_PCT` stabilește factorul față de prețul de bază; fiecare tarif original este înmulțit cu același factor, cu prag și plafon propriu. Programul exact este în `nightly_prices`; câmpurile scalare rămân referințe compatibile cu API-ul vechi.
 - Aprobare → verificare integrală a calendarului → `calendar.set_price` pe fiecare noapte → `applied`. Respingere → `rejected`. Nopțile ocupate sau tarifele schimbate produc `conflict`, fără scrieri. Calendarul imposibil de verificat produce `failed`.
@@ -20,10 +23,14 @@ La o anulare de ultim moment, caută în datele de piață cel mai ieftin anunț
 - `GET /f5/proposals` și pagina de UI arată propunerile; pagina afișează și creditul sursei de date.
 - Setări proprii: `F5_UNDERCUT_PCT`, `F5_MARKET_TIMEOUT_S`, `F5_CALENDAR_TIMEOUT_S`, `F5_TIMEZONE` (implicit Europe/Bucharest).
 - Snapshot real Inside Airbnb Atena, 22 septembrie 2026, verificat: `app/adapters/inside_airbnb/local_data/listings.csv.gz`; opt rânduri reale reduse la coloanele necesare sunt versionate în `fixtures/`. Detalii de configurare și licență în README-ul adaptorului.
+- Fixture-ul local curent mai conține patru rânduri sintetice de demo, identificate în README-ul adaptorului; nu sunt prezentate ca extrase din snapshot.
 
 ## Decizii
-- Fără LLM în schelet — prețul trebuie să vină din date și din reguli, deci e calculat în cod.
-- Regulile sunt funcții pure în `pricing.py`: comparabilitate, preț, plafon, distribuție pe nopți și validarea snapshotului. Funcțiile inițiale rămân importabile și din `relisting.py`.
+- AgentRunner orchestrează inspectarea, căutarea și propunerea; mock-ul reproduce selecția de unelte pentru demo.
+- Modelul nu stabilește sume și nu scrie în calendar. Regulile sunt funcții pure în `pricing.py`: comparabilitate, preț, plafon, distribuție pe nopți și validarea snapshotului.
+- Orice propunere cere aprobarea hostului; numai handlerul de decizie poate scrie tarifele după o recitire validă a calendarului.
+- Se verifică aprobarea persistentă, scopul și opțiunea; se recitesc limita hostului și fiecare noapte înainte de scriere. Un check-in mutat mai devreme scurtează termenul. Timeoutul total persistă eșecul și progresul parțial înainte de propagare.
+- Tariful minim este un cent inclusiv la reducere maximă de 100%. Simbolul `$` din Inside Airbnb nu înseamnă USD: Atena folosește EUR, iar conversia cere monedă USD explicită.
 - Nu scriem disponibilitatea: la aprobare calendarul trebuie să confirme deja nopțile libere. Citirea nesuportată duce la fallback manual înainte de cererea de aprobare; nu inventăm tarife originale.
 - Rotunjire monetară cu Decimal: la cent pentru tarife, în sus pentru praguri. Nu sunt acceptate sume negative/nefinite, nopți duplicate, monede diferite sau snapshoturi incomplete.
 - Blocare locală pe proprietate și verificarea stării finale împiedică propuneri/scrieri repetate în procesul unic. Migrarea celor două coloane F5 este aditivă; propunerile vechi fără snapshot nu pot scrie tarife.

@@ -6,14 +6,22 @@ Din rădăcina proiectului, instalează dependențele cu `python manage.py setup
 mediul lipsește. Pe Windows folosește un Python nativ; în mediul verificat am creat
 `.venv` cu `py -3.11 -m venv .venv`, apoi am instalat `requirements-dev.txt`.
 
-În terminalul API, PowerShell:
+Pentru reproducere, suprascrie configurația doar în terminalul de demo. Nu sunt
+necesare chei sau servicii externe și nu trebuie modificat `.env`. Fixture-ul conține
+opt rânduri reale din Atena și patru sintetice. Prețurile Atena sunt în EUR;
+simbolul `$` este un artefact al exportului, nu o indicație USD.
 
 ```powershell
 $env:PMS_PROVIDER='mock'
 $env:LLM_PROVIDER='mock'
 $env:REVIEWS_PROVIDER='mock'
-$env:MARKET_PROVIDER='mock'
+$env:MARKET_PROVIDER='inside_airbnb'
+$env:INSIDE_AIRBNB_LISTINGS_CSV='app/adapters/inside_airbnb/fixtures/athens_2026-09-22.sample.csv'
+$env:MARKET_CITY='Athens'
+$env:MARKET_CURRENCY='EUR'
+$env:MARKET_USD_TO_CURRENCY_RATE='1'
 $env:FIXED_TODAY='2026-06-01'
+$env:F5_LAST_MINUTE_WINDOW_HOURS='168'
 $env:F2_SIM_ENABLED='true'
 $env:F2_SIM_STAFF_DELAY_S='0'
 $env:F2_SIM_GUEST_DELAY_S='0'
@@ -28,7 +36,9 @@ la `http://127.0.0.1:8000`, cu documentație la `/docs`. Pentru porturi alternat
 `$env:STAYPILOT_API_URL='http://127.0.0.1:8015'` în terminalul UI și pornește
 `python manage.py ui --server.port 8515`. Aceste porturi au fost folosite la verificare.
 
-În **Simulator → Reset world → Reset world**, resetează exclusiv lumea de demo.
+În **Simulator → Reset world**, confirmă și apasă **Reset world**. Se resetează lumea
+demo și datele generate de fluxuri, inclusiv propunerile/statusurile F5 și aprobările.
+Reîncarcă alte pagini deja deschise ca să nu mai afișeze informații dinaintea resetului.
 În **World data**, verifică patru proprietăți, șapte rezervări și data simulată
 1 iunie 2026. Păstrează ordinea de mai jos; Emma trebuie să rămână activă până la F5.
 Setările F2 de mai sus fac personalul, răspunsul oaspetelui și reparația simulate
@@ -157,23 +167,29 @@ deci una indisponibilă nu le oprește pe celelalte.
    tarifele obișnuite sunt **70, 70, 80.50 EUR**; 5 iunie este vineri.
 2. În **Simulator → Cancel booking**, alege **Emma Johnson**, apoi **Cancel this booking**.
    PMS-ul simulat anulează rezervarea, iar sincronizarea emite `BookingCancelled`.
-3. În pagina **F5**, propunerea este `awaiting_approval`. Cel mai ieftin comparabil
-   este **Lipscani Cozy Studio**, **68 EUR**. Anunțul de 45 EUR nu are facilitățile cerute.
-   Tabelul pe nopți arată:
+3. În **Agent timeline**, selectează `f5_relisting`; urmărește `inspect_cancellation`,
+   `search_comparables` și `prepare_relisting`. În **Notifications** apar progresul
+   căutării și propunerea care așteaptă aprobarea hostului.
+4. În pagina **F5**, propunerea este `awaiting_approval`. Sursa este fixture-ul
+   independent Inside Airbnb din Atena. Pentru criteriile Old Town Studio, cel mai ieftin
+   comparabil din eșantion este **Apartment with Leafy Backyard Steps from the Acropolis**:
+   **130.50 EUR/noapte**, fără conversie din simbolul `$`. Celelalte rânduri nu trec toate filtrele.
+   Deoarece comparabilul este mai scump decât tariful proprietății, plafonul F5 nu permite
+   o creștere; propunerea păstrează tarifele obișnuite:
 
    | Noapte | Tarif original | Prag host | Tarif propus |
    |---|---:|---:|---:|
-   | 2026-06-03 | 70.00 | 52.50 | 65.96 |
-   | 2026-06-04 | 70.00 | 52.50 | 65.96 |
-   | 2026-06-05 | 80.50 | 60.38 | 75.85 |
+   | 2026-06-03 | 70.00 | 52.50 | 70.00 |
+   | 2026-06-04 | 70.00 | 52.50 | 70.00 |
+   | 2026-06-05 | 80.50 | 60.38 | 80.50 |
 
-4. În **Approvals**, titlul include **65.96–75.85 EUR/night**; sumarul enumeră
+5. În **Approvals**, titlul include **70–80.5 EUR/night**; sumarul enumeră
    nopțile, limitele, sursa și expirarea la **2026-06-03 15:00 Europe/Bucharest**.
    Până la aprobare, calendarul rămâne la tarifele originale, cu nopțile eliberate.
-5. Apasă **Relist at 65.96–75.85 EUR/night**. F5 recitește calendarul și aplică exact
+6. Apasă **Relist at 70–80.5 EUR/night**. F5 recitește calendarul și aplică exact
    tarifele aprobate pe nopți. Propunerea devine `applied`, iar **Notifications**
    confirmă nopțile și prețurile. În **World data → Calendar**, verifică cele trei sume.
-6. Repetarea aceleiași decizii nu produce alte scrieri. Pentru respingere, resetează
+7. Repetarea aceleiași decizii nu produce alte scrieri. Pentru respingere, resetează
    și repetă până la pasul 4, apoi **Reject**: `rejected`, prețuri originale păstrate.
 
 ### Variante de protecție F5
@@ -193,22 +209,28 @@ deci una indisponibilă nu le oprește pe celelalte.
   individuale, plafonul original, timeouturile, lipsa datelor și progresul parțial la scriere.
   Nu sunt necesare servicii externe sau modificări de seed pentru aceste scenarii.
 
-## Varianta cu Inside Airbnb și rezerva mock
+## Sursa de piață F5: fixture-ul Atena și snapshotul complet
 
-Configurarea și descărcarea exactă sunt în
-[README-ul adaptorului](../app/adapters/inside_airbnb/README.md).
-Arhiva verificată este în `app/adapters/inside_airbnb/local_data/listings.csv.gz`.
-Folosește `MARKET_PROVIDER=inside_airbnb`, calea respectivă,
-`MARKET_CITY=Athens`, `MARKET_CURRENCY=EUR` și o bază nouă sau un reimport.
-Restul porturilor pot rămâne mock.
+Demo-ul folosește opt rânduri reale și patru sintetice incluse în
+`app/adapters/inside_airbnb/fixtures/athens_2026-09-22.sample.csv`. Prețurile Atena sunt
+în EUR, chiar dacă exportul afișează `$`; o conversie cere monedă USD explicită.
+Recomandarea pentru acest snapshot este `MARKET_USD_TO_CURRENCY_RATE=1`. Datele sunt din Atena,
+nu din București, și nu trebuie tratate ca prețuri reprezentative pentru piața locală.
+UI-ul și sumarul aprobării afișează **Inside Airbnb … CC BY 4.0**.
 
-Repetă F5: comparabilul și prețurile diferă de scenariul mock, dar fiecare noapte
-rămâne între prag și plafon. UI-ul și sumarul aprobării afișează explicit
-**Inside Airbnb … CC BY 4.0**. Sunt snapshoturi istorice pentru orașul configurat,
-nu prețuri live din București.
+Pentru un eșantion de piață mai mare, configurarea și descărcarea arhivei complete sunt în
+[README-ul adaptorului](../app/adapters/inside_airbnb/README.md). Înlocuiește calea CSV
+cu `app/adapters/inside_airbnb/local_data/listings.csv.gz`, păstrează orașul Atena și
+cursul explicit, apoi repornește API-ul. Schimbarea fișierului sau a cursului declanșează
+reimportul automat al pieței.
 
-Dacă arhiva lipsește sau un serviciu real nu este disponibil, setează toate cele patru
-providere pe `mock`, repornește API-ul și resetează lumea de demo. Nu sunt necesare
+Pentru rezerva fără fixture, setează `MARKET_PROVIDER=mock` și repornește API-ul.
+După resetul lumii, anulează Emma și urmărește același flux F5: comparabilul devine
+**Lipscani Cozy Studio**, **68 EUR/noapte**, iar propunerea este
+**65.96 / 65.96 / 75.85 EUR**. Aprobarea aplică acele tarife pe fiecare noapte.
+
+Dacă fixture-ul lipsește sau un serviciu real nu este disponibil, setează providerul
+respectiv pe `mock`, repornește API-ul și resetează lumea de demo. Nu sunt necesare
 internet, chei PMS, OpenRouter sau Apify. Nu comite `.env` ori baze de date locale.
 
 ## Verificare

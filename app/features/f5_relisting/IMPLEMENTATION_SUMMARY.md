@@ -1,5 +1,10 @@
 # F5 — Rezumatul implementării fazei 1
 
+**Reluarea curentă cu agent F5:** [PHASE1_REVALIDATION.md](PHASE1_REVALIDATION.md)
+documentează corecțiile de autorizare, reguli curente, expirare, timeout, rezultate
+compacte ale agentului și moneda locală Inside Airbnb. Aceasta este starea actuală;
+numerele de teste și istoricul de mai jos descriu livrările anterioare.
+
 Verificat la 14 noiembrie 2026. Modificările sunt limitate la F5, adaptorul Inside
 Airbnb, `docs/DEMO.md` și adăugări în `.env.example` / `requirements.txt`.
 Nucleul, porturile, routerele comune și celelalte feature-uri nu au fost modificate.

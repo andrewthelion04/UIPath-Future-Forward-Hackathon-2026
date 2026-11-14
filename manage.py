@@ -56,7 +56,7 @@ def cmd_setup(_: list[str]) -> int:
     env_file = ROOT / ".env"
     if not env_file.exists():
         shutil.copyfile(ROOT / ".env.example", env_file)
-        print("Created .env from .env.example (everything on mock, no secrets needed).")
+        print("Created .env from .env.example (local data only; no secrets or network needed).")
     print("\nSetup done. Next:  python manage.py seed  |  api  |  ui  |  test")
     return 0
 

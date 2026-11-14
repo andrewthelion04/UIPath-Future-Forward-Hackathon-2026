@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, time
 from typing import Any
 
 import pytest
@@ -80,6 +80,21 @@ def test_rejected_proposal_leaves_the_price_unchanged(client):
     assert client.get("/f5/proposals").json()[0]["status"] == "rejected"
 
 
+def test_reset_world_clears_rejected_f5_proposal_and_allows_a_new_one(client):
+    cancel(client, "Emma Johnson")
+    (approval,) = client.get("/approvals").json()
+    reject(client, approval["id"])
+    assert client.get("/f5/proposals").json()[0]["status"] == "rejected"
+
+    reset = client.post("/sim/reset")
+
+    assert reset.status_code == 200
+    assert client.get("/f5/proposals").json() == []
+    assert client.get("/approvals").json() == []
+    cancel(client, "Emma Johnson")
+    assert client.get("/f5/proposals").json()[0]["status"] == "awaiting_approval"
+
+
 def test_cancellation_that_is_not_last_minute_only_informs_the_host(client):
     cancel(client, "Marie Dubois")  # check-in peste 20 de zile; pragul hostului e 7
 
@@ -135,12 +150,75 @@ def test_market_failure_or_timeout_is_an_explicit_fallback(settings, monkeypatch
 
         assert client.get("/approvals").json() == []  # nu propunem un preț inventat
         assert client.get("/f5/proposals").json()[0]["status"] == "failed"
-        (notification,) = client.get("/notifications").json()
+        notifications = client.get("/notifications").json()
+        notification = next(n for n in notifications if "market data unavailable" in n["title"])
         assert notification["level"] == "warning" and expected in notification["body"]
-        assert "market data unavailable" in notification["title"]
+        assert any("F5 agent started" in n["title"] for n in notifications)
         assert calendar(client, emma) == [(True, 70.0), (True, 70.0), (True, 80.5)]
         handler = events_of(client, "BookingCancelled")[0]["handlers"][0]
         assert handler["status"] == "ok"  # eșecul e tratat în feature, nu propagat
+
+
+def test_f5_agent_uses_market_tools_and_notifies_before_approval(client):
+    cancel(client, "Emma Johnson")
+
+    runs = client.get("/agent/runs", params={"feature": "f5_relisting"}).json()
+    assert len(runs) == 1
+    run = client.get(f"/agent/runs/{runs[0]['id']}").json()
+    assert run["agent"] == "f5_relisting.reprice"
+    assert [step["tool_name"] for step in run["steps_detail"] if step["kind"] == "tool"] == [
+        "inspect_cancellation",
+        "search_comparables",
+        "prepare_relisting",
+    ]
+    notifications = client.get("/notifications").json()
+    assert any("F5 agent started" in n["title"] for n in notifications)
+    assert any("F5 market search completed" in n["title"] for n in notifications)
+    pending = next(n for n in notifications if "awaiting approval" in n["title"])
+    assert pending["level"] == "action_required"
+    assert "calendar has not been changed" in pending["body"]
+
+
+def test_last_minute_window_can_be_configured_in_hours(settings, monkeypatch):
+    monkeypatch.setenv("F5_LAST_MINUTE_WINDOW_HOURS", "2")
+    with app_client(settings) as client:
+        cancel(client, "Emma Johnson")
+
+        assert client.get("/f5/proposals").json() == []
+        assert client.get("/approvals").json() == []
+        notification = client.get("/notifications").json()[0]
+        assert "2-hour relisting window" in notification["body"]
+        run = client.get("/agent/runs", params={"feature": "f5_relisting"}).json()[0]
+        details = client.get(f"/agent/runs/{run['id']}").json()["steps_detail"]
+        assert [step["tool_name"] for step in details if step["kind"] == "tool"] == [
+            "inspect_cancellation"
+        ]
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "second", "eligible"),
+    [(13, 0, 0, True), (12, 59, 59, False)],
+)
+def test_two_hour_window_boundary(settings, monkeypatch, hour, minute, second, eligible):
+    from zoneinfo import ZoneInfo
+
+    from conftest import booking_by_guest
+
+    monkeypatch.setenv("F5_LAST_MINUTE_WINDOW_HOURS", "2")
+    with app_client(settings) as client:
+        booking = booking_by_guest(client, "Emma Johnson")
+        check_in = date.fromisoformat(booking["check_in"])
+        clock = client.app.state.container.clock
+        local_now = datetime.combine(
+            check_in, time(hour, minute, second), ZoneInfo("Europe/Bucharest")
+        )
+        monkeypatch.setattr(clock, "today", lambda: check_in)
+        monkeypatch.setattr(clock, "now", lambda: local_now)
+
+        cancel(client, "Emma Johnson")
+
+        proposals = client.get("/f5/proposals").json()
+        assert bool(proposals) is eligible
 
 
 def test_no_listing_with_the_same_amenities_means_no_proposal(settings):

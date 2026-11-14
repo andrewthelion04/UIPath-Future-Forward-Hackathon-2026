@@ -121,8 +121,9 @@ with reviews_tab:
 # --- Reset --------------------------------------------------------------------------
 with reset_tab:
     st.warning(
-        "Deletes every message, approval, notification, incident and agent run, then rebuilds "
-        "the simulated world from seed/world.json."
+        "Deletes all generated data, including F5 proposals and their statuses, approvals, "
+        "notifications, incidents and agent runs, then rebuilds the simulated world. "
+        "Refresh other open pages after the reset to see the cleared state."
     )
     confirmed = st.checkbox("I understand, reset everything")
     if st.button("Reset world", disabled=not confirmed):
@@ -130,6 +131,6 @@ with reset_tab:
         if summary is not None:
             flash(
                 f"World reset: {summary['properties']} properties, {summary['bookings']} bookings, "
-                f"{summary['reviews']} reviews."
+                f"{summary['reviews']} reviews. F5 proposals and approvals cleared; refresh other pages."
             )
             st.rerun()

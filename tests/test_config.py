@@ -8,14 +8,19 @@ from app.config import ConfigError, load_settings
 from app.main import create_app
 
 
-def test_defaults_run_fully_on_mock_without_any_secret(tmp_path):
+def test_defaults_use_mock_integrations_and_local_market_fixture_without_secrets(tmp_path):
     settings = load_settings(env_file=None, database_path=tmp_path / "db.sqlite")
     assert (
         settings.pms_provider,
         settings.llm_provider,
         settings.reviews_provider,
         settings.market_provider,
-    ) == ("mock", "mock", "mock", "mock")
+    ) == ("mock", "mock", "mock", "inside_airbnb")
+    assert settings.inside_airbnb_listings_csv == settings.inside_airbnb_listings_csv.resolve()
+    assert settings.inside_airbnb_listings_csv.name == "athens_2026-09-22.sample.csv"
+    assert settings.market_city == "Athens"
+    assert settings.market_currency == "EUR"
+    assert settings.market_usd_to_currency_rate == 0.92
 
 
 @pytest.mark.parametrize(
@@ -28,7 +33,7 @@ def test_defaults_run_fully_on_mock_without_any_secret(tmp_path):
         ({"llm_provider": "openrouter", "openrouter_api_key": "sk-or-x"}, "LLM_MODEL"),
         ({"reviews_provider": "apify"}, "APIFY_TOKEN"),
         ({"reviews_provider": "apify", "apify_token": "t"}, "APIFY_REVIEWS_ACTOR_ID"),
-        ({"market_provider": "inside_airbnb"}, "INSIDE_AIRBNB_LISTINGS_CSV"),
+        ({"market_provider": "inside_airbnb", "inside_airbnb_listings_csv": None}, "INSIDE_AIRBNB_LISTINGS_CSV"),
         ({"market_provider": "inside_airbnb", "inside_airbnb_listings_csv": "missing.csv"}, "missing file"),
     ],
 )
@@ -69,6 +74,12 @@ def test_real_adapters_are_accepted_when_their_secrets_exist(tmp_path):
     )
     assert settings.pms_provider == "hospitable"
     assert "hsp-secret-value" not in repr(settings)  # secretele nu apar în loguri
+
+
+@pytest.mark.parametrize("rate", [0, -0.5, float("inf"), float("nan")])
+def test_market_currency_conversion_rate_must_be_finite_and_positive(rate):
+    with pytest.raises(ConfigError, match="MARKET_USD_TO_CURRENCY_RATE"):
+        load_settings(env_file=None, market_usd_to_currency_rate=rate)
 
 
 def test_switching_is_done_from_the_env_file(tmp_path):
