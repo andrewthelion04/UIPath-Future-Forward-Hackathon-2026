@@ -42,6 +42,7 @@ from app.core.id_mapper import IdMapper
 from app.core.notifications import NotificationService
 from app.core.sync_service import SyncService
 from app.core.world_repo import WorldRepository
+from app.core.host_answers import HostAnswers
 from app.ports.llm import LLMPort, MockPolicy
 from app.ports.market import MarketDataPort
 from app.ports.pms import PmsConnection, PmsRegistry
@@ -99,6 +100,7 @@ class Container:
             self.pms, self.world, self.conversations, self.bus, self.notifications
         )
         self.calendar = CalendarGateway(self.pms, self.world)
+        self.host_answers = HostAnswers(self.db, self.world, self.channel)
         self.sync = SyncService(self.pms, self.world, self.ids, self.bus)
 
         # --- Celelalte porturi -----------------------------------------------------
@@ -220,6 +222,7 @@ class Container:
             approvals=self.approvals,
             notifications=self.notifications,
             channel=self.channel,
+            host_answers=self.host_answers,
             calendar=self.calendar,
             world=self.world,
             conversations=self.conversations,
@@ -270,6 +273,7 @@ class Container:
 
     async def startup(self) -> None:
         self.init_schema()
+        self.host_answers.suppress_reported_issues()
         if self.settings.auto_seed and self.world.get_host() is None:
             from app.seeding import seed_world
 

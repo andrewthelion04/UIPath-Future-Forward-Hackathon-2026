@@ -133,9 +133,8 @@ async def test_a_handover_tells_the_host_what_the_guest_wants(desk):
     await call("send_guest_reply", text="The host will contact you directly about this.",
                host_follow_up=True, follow_up_note="Guest asks for a refund instead of moving.")  # fmt: skip
 
-    notification = container.notifications.list()[0]
-    assert notification.title == "Guest request needs manual follow-up"
-    assert "What the guest needs: Guest asks for a refund instead of moving." in notification.body
+    answer = container.host_answers.list()[0]
+    assert "Guest asks for a refund instead of moving." in answer["context_note"]
 
 
 # --- Conversația cap-coadă, pe politica mock ----------------------------------------------------
@@ -226,10 +225,10 @@ def test_an_unhappy_guest_is_handed_over_to_the_host_without_promises(offered):
 
     reply = say(client, lukas, "I am not happy with this. I want a refund instead.")
 
-    assert "host to contact you directly" in reply and "refund" not in reply
+    assert "host, who can reply here" in reply and "refund" not in reply
     assert status(client, incident_id) == "awaiting_guest"
-    follow_up = next(n for n in client.get("/notifications").json() if "manual follow-up" in n["title"])
-    assert "I want a refund instead" in follow_up["body"] and follow_up["booking_id"] == lukas["id"]
+    follow_up = client.get("/answers").json()[0]
+    assert "I want a refund instead" in follow_up["question"] and follow_up["booking_id"] == lukas["id"]
 
 
 def test_after_the_move_the_guest_is_told_the_new_address(offered):

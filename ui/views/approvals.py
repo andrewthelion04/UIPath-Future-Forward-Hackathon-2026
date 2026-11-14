@@ -5,14 +5,43 @@ from __future__ import annotations
 import streamlit as st
 
 from ui import api_client as api
-from ui.components import act, flash_outcome, load, multiline, short_time, show_flash
+from ui.components import act, flash, flash_outcome, load, multiline, short_time, show_flash
 
-st.title("Approvals")
-st.caption("Every action with impact waits here for the host's decision.")
+st.title("Approvals / Answers")
+st.caption("Approve proposed actions or answer guests directly in their booking conversation.")
 show_flash()
 
+answers = load("/answers")
+for answer in answers:
+    with st.container(border=True):
+        st.subheader(f"Reply to {answer['guest_name']} · {answer['property_name']}")
+        st.caption(f"Guest question · {short_time(answer['created_at'])} UTC")
+        st.write(answer["question"])
+        if answer["context_note"]:
+            st.caption(answer["context_note"])
+        with st.expander("Conversation context"):
+            for message in load(f"/bookings/{answer['booking_id']}/messages", limit=12):
+                st.text(f"{message['sender']}: {message['body']}")
+        uncertain = answer["status"] == "sending"
+        if uncertain:
+            st.warning("Delivery is not confirmed. Check the PMS conversation before sending another message.")
+            delivered = st.radio("After checking the PMS conversation:", ["The message was delivered", "The message was not delivered"], key=f"delivery_{answer['id']}")
+            if st.button("Confirm delivery check", key=f"check_{answer['id']}"):
+                if act(api.post, f"/answers/{answer['id']}/delivery-check", {"delivered":delivered == "The message was delivered"}) is not None:
+                    st.rerun()
+        with st.form(f"answer_{answer['id']}"):
+            text = st.text_area("Your reply", value=answer.get("reply") or "", max_chars=4000,
+                                key=f"reply_{answer['id']}")
+            st.caption("Your exact message will be sent to the guest through their booking's PMS.")
+            if st.form_submit_button("Send reply to guest", disabled=uncertain):
+                if not text.strip():
+                    st.error("Enter a reply before sending.")
+                elif act(api.post, f"/answers/{answer['id']}/reply", {"text":text}) is not None:
+                    flash("Your reply was sent to the guest.")
+                    st.rerun()
+
 pending = load("/approvals")
-if not pending:
+if not pending and not answers:
     st.info("Nothing is waiting for a decision.")
 
 
@@ -55,6 +84,13 @@ for approval in pending:
             decide(approval, "approve", chosen, note)
         if reject_column.button("Reject", key=f"reject_{approval['id']}", width="stretch"):
             decide(approval, "reject", None, note)
+
+with st.expander("Sent answers"):
+    for answer in load("/answers", status="all"):
+        if answer["status"] == "sent":
+            st.markdown(f"**{answer['guest_name']} · {answer['property_name']}**")
+            st.text(answer["question"])
+            st.text(answer["reply"])
 
 with st.expander("Decided approvals"):
     decided = [a for a in load("/approvals", status="all") if a["status"] != "pending"]

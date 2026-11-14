@@ -23,7 +23,7 @@ for notification in notifications:
     with st.container(border=True):
         title_column, action_column = st.columns([6, 1])
         with title_column:
-            st.badge(level.replace("_", " "), icon=LEVEL_ICONS.get(level), color=LEVEL_COLORS.get(level, "blue"))
+            st.badge(level.replace("_", " ").capitalize(), icon=LEVEL_ICONS.get(level), color=LEVEL_COLORS.get(level, "blue"))
             st.markdown(f"**{notification['title']}**")
         if not notification["read"] and action_column.button(
             "Mark read", key=f"read_{notification['id']}", width="stretch"

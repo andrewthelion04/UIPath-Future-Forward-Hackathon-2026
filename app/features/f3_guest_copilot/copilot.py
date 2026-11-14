@@ -111,13 +111,13 @@ class GuestCopilot:
         handled = state["replies_sent"] > 0 or state.get("offer_answered")
         if result.status != "finished" or not handled:
             reason = result.error or result.result or result.status
-            ctx.notify(
-                f"Copilot could not answer {booking.guest_name}: please reply manually",
-                f'Guest wrote: "{event.text}"\n\nAgent outcome: {result.status} ({reason})',
-                level="warning",
-                booking_id=booking.id,
-                property_id=booking.property_id,
-            )
+            if state.get("issue_reported"):
+                ctx.notify("Incident reported; guest reply needs attention",
+                           f"The incident workflow is handling this report. Guest reply failed: {reason}",
+                           level="warning", booking_id=booking.id, property_id=booking.property_id)
+            else:
+                ctx.host_answers.request(booking.id, event.message_id, event.text,
+                                         f"Copilot could not answer: {result.status} ({reason})")
 
     async def on_guest_request_decision(self, event: ApprovalDecided) -> None:
         """Hostul a decis asupra unei cereri: oaspetele primește confirmarea sau refuzul."""

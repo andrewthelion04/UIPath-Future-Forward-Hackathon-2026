@@ -909,8 +909,8 @@ class IncidentService:
     async def _find_relocation(
         self, booking: Booking, original: Property, today: date
     ) -> Property | None:
-        """Cea mai potrivită proprietate compatibilă, liberă pe restul sejurului."""
-        start, end = max(booking.check_in, today), booking.check_out
+        """Destinație compatibilă în același PMS, liberă pentru întreaga rezervare."""
+        start, end = booking.check_in, booking.check_out
         if (end - start).days <= 0:
             return None
         shared = set(original.amenities)
@@ -928,12 +928,12 @@ class IncidentService:
         return None
 
     def _can_host_relocation(self, candidate: Property) -> bool:
-        """Ținta e sănătoasă și o putem bloca: fără incident deschis, cu calendar scriabil."""
+        """Ținta nu are incident deschis și PMS-ul permite mutarea rezervării."""
         if self.repo.open_for_property(candidate.id):
             return False  # nu mutăm un oaspete într-o proprietate cu o problemă cunoscută
         connection = self._ctx.pms.get(candidate.pms_provider)
         # Fără blocare în calendar, ținta poate fi vândută altcuiva după confirmare.
-        return connection is not None and connection.capabilities.write_availability
+        return connection is not None and connection.capabilities.move_reservations
 
     async def _is_free(self, property_id: str, start: date, end: date) -> bool:
         try:
@@ -1135,7 +1135,7 @@ class IncidentService:
             )
 
     async def _propose_again(
-        self, incident: Incident, title: str, body: str, *, level: str = "warning"
+        self, incident: Incident, title: str, body: str, *, level: str = "warning", uncertain: bool = False
     ) -> None:
         """Pasul aprobat nu s-a putut executa: nimic către oaspete, propunere nouă către host."""
         self.repo.update(
@@ -1147,6 +1147,8 @@ class IncidentService:
             decided_option=None,
             resolution=None,
             guest_note=(
+                "The PMS move could not be verified. The host is checking the booking before confirming any change."
+                if uncertain else
                 "The move that was offered could not be arranged. The host is reviewing the "
                 "options and will get back to the guest; nothing has changed for the stay yet."
             ),
@@ -1160,7 +1162,7 @@ class IncidentService:
         ctx = self._ctx
         original = ctx.world.get_property(incident.property_id)
         target = ctx.world.get_property(incident.relocation_property_id or "")
-        start, end = max(booking.check_in, ctx.clock.today()), booking.check_out
+        start, end = booking.check_in, booking.check_out
         name = target.name if target else "The relocation target"
         if target is None or original is None:
             await self._propose_again(
@@ -1174,6 +1176,11 @@ class IncidentService:
         # Verificarea și blocarea stau sub lockul comun al calendarului țintei: două relocări
         # (sau o relocare și o relistare) nu pot decide pe aceeași citire.
         async with ctx.calendar.lock(target.id):
+            connection = ctx.pms.get(booking.pms_provider)
+            if booking.pms_provider != target.pms_provider:
+                await self._propose_again(incident, "Relocation provider mismatch",
+                    "The destination is not on this booking's PMS. No reservation was moved.")
+                return
             still_fits = is_compatible(target, original, booking.guest_count)
             if not (
                 still_fits
@@ -1193,23 +1200,29 @@ class IncidentService:
                 )
                 return
             try:
-                await ctx.calendar.set_availability(target.id, start, end, False)
+                if connection.capabilities.write_availability:
+                    await ctx.calendar.set_availability(target.id, start, end, False)
+                await connection.move_reservation(booking.id, target.id)
+                await ctx.sync.sync(booking.pms_provider)
+                moved = ctx.world.get_booking(booking.id)
+                if moved is None or moved.property_id != target.id:
+                    raise RuntimeError("The synchronized PMS booking is not on the destination property")
             except Exception as exc:
                 # Fără blocare nu putem garanta ținta: nu confirmăm nimic oaspetelui.
                 await self._propose_again(
                     incident,
-                    f"{name} could not be blocked in the calendar",
-                    f"{booking.guest_name} accepted the move, but blocking {name} from {start} to "
+                    f"{name} could not be blocked or the reservation move could not be verified",
+                    f"{booking.guest_name} accepted the move, but reserving {name} from {start} to "
                     f"{end} failed ({exc}). Nothing was confirmed to the guest; a new proposal "
                     "follows.",
                     level="error",
+                    uncertain=True,
                 )
                 return
 
-        notes = [f"{target.name} is blocked from {start} to {end}."]
+        notes = [f"The PMS reservation was moved to {target.name} and synchronized to StayPilot."]
         if not await self._message_guest(booking.id, drafts.relocation_accepted):
             notes.append("The confirmation could not be delivered to the guest; contact them directly.")
-        notes.append("The reservation itself must still be moved in the PMS.")
         incident = self.repo.update(
             incident.id,
             status="relocated",
@@ -1224,6 +1237,23 @@ class IncidentService:
             property_id=incident.property_id,
             booking_id=booking.id,
         )
+
+    async def review_unapplied_relocation(self, incident_id: str) -> None:
+        """Reface oferta veche fără să execute o mutare nouă neaprobată."""
+        async with self._incident_locks[incident_id]:
+            incident = self.repo.get(incident_id)
+            if incident is None:
+                raise LookupError("Incident not found")
+            booking = self._live_booking(incident)
+            if incident.status != "relocated" or booking is None:
+                raise ValueError("Only a recorded relocation on an active booking can be reviewed")
+            if booking.property_id == incident.relocation_property_id:
+                raise ValueError("This relocation is already reflected in the booking")
+            if incident.closure_approval_id:
+                self._ctx.approvals.withdraw(incident.closure_approval_id, reason="The PMS relocation was not applied")
+                incident = self.repo.update(incident.id, closure_approval_id=None, closure_message=None)
+            await self._propose_again(incident, "Previous relocation was not applied in the PMS",
+                "The booking still belongs to the original property. A new same-provider offer requires host approval and guest acceptance.")
 
     # --- Sarcini și închidere -------------------------------------------------------------
 

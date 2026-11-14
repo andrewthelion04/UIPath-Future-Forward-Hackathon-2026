@@ -285,13 +285,11 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
             run.state["booking_id"], args.text, sender="copilot", feature=ctx.feature
         )
         run.state["replies_sent"] = run.state.get("replies_sent", 0) + 1
-        if args.host_follow_up:
+        if args.host_follow_up and not run.state.get("issue_reported"):
             note = (args.follow_up_note or "").strip()
-            ctx.notify(
-                "Guest request needs manual follow-up",
-                "Some requested facts or permissions are unavailable. Please review the conversation."
-                + (f"\n\nWhat the guest needs: {note}" if note else ""),
-                level="warning", booking_id=run.state["booking_id"], property_id=run.state["property_id"],
+            ctx.host_answers.request(
+                run.state["booking_id"], run.state.get("message_id") or run.run_id,
+                run.state.get("guest_text") or note or "Please review the guest conversation.", note,
             )
         return {"sent": True, "message_id": message.id}
 
@@ -400,7 +398,9 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
                 source=f"feature:{ctx.feature}",
             )
         )
-        return {"reported": True, "note": "The host's incident flow has been started."}
+        run.state["issue_reported"] = True
+        ctx.host_answers.handled_by_incident(booking.id, run.state.get("message_id") or run.run_id)
+        return {"reported": True, "note": "The host's incident flow has been started. No separate text-answer request is needed."}
 
     return [
         Tool(

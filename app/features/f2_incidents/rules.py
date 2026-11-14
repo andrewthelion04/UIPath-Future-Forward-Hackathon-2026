@@ -26,6 +26,7 @@ def is_compatible(candidate: Property, original: Property, guest_count: int) -> 
     """Regula de compatibilitate pentru relocare: același oraș, loc pentru toți, cel puțin la fel de mare."""
     return (
         candidate.id != original.id
+        and candidate.pms_provider == original.pms_provider
         and candidate.city.strip().lower() == original.city.strip().lower()
         and candidate.max_guests >= guest_count
         and candidate.bedrooms >= original.bedrooms

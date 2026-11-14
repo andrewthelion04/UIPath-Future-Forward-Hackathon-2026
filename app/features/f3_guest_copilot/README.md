@@ -2,6 +2,19 @@
 
 Mesaj de la oaspete → bucla agentului, cu unelte care citesc datele noastre → răspuns trimis.
 
+Pentru informații lipsă (`host_follow_up=true`) sau o rulare fără răspuns, întrebarea
+ajunge în inboxul comun **Approvals / Answers**, cu mesajul sursă și contextul necesar.
+Hostul poate scrie răspunsul într-un textbox; textul exact este livrat prin conexiunea
+PMS a rezervării și apare în aceeași conversație. `GET /answers` și
+`POST /answers/{id}/reply` sunt endpointuri comune; notificarea generică de follow-up
+este înlocuită de această acțiune. Erorile tehnice și întreruperile rămân notificabile.
+
+Un mesaj care a emis cu succes `IssueReported` este gestionat prin aprobarea incidentului,
+fără un textbox separat pentru host. Regula se aplică indiferent de ordinea uneltelor;
+cererea de răspuns deja creată pentru același mesaj devine `superseded`. Întrebările
+independente ulterioare rămân în Answers. La pornire sunt ascunse și duplicatele vechi
+identificate prin corelarea evenimentelor, fără a elimina istoricul sau răspunsurile trimise.
+
 | | |
 |---|---|
 | **Ascultă** | `GuestMessageReceived`; `ApprovalDecided` pentru aprobările proprii (`guest_request`) |

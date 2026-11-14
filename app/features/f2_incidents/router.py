@@ -94,6 +94,16 @@ def build_router(service: IncidentService) -> APIRouter:
             raise HTTPException(409, str(exc)) from exc
         return await finish(wait, ActionResult(status="recorded", detail=message.id))
 
+    @router.post("/incidents/{incident_id}/review-relocation", response_model=ActionResult)
+    async def review_relocation(incident_id: str, wait: bool = False):
+        try:
+            await service.review_unapplied_relocation(incident_id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return await finish(wait, ActionResult(status="reviewing"))
+
     @router.post("/incidents/{incident_id}/guest-answer", response_model=ActionResult)
     async def guest_answer(incident_id: str, body: GuestAnswerIn, wait: bool = False) -> ActionResult:
         """Răspunsul oaspetelui la oferta de relocare (acum din simulare sau manual)."""

@@ -466,10 +466,36 @@ async def test_missing_facts_can_request_host_follow_up_after_a_safe_reply(polic
         "send_guest_reply", text="The requested details are unavailable. The host will follow up.",
         host_follow_up=True,
     )
-    (notification,) = policy.c.notifications.list()
-    assert notification.title == "Guest request needs manual follow-up"
-    assert notification.booking_id == policy.booking.id
-    assert notification.property_id == policy.booking.property_id
+    (answer,) = policy.c.host_answers.list()
+    assert answer["booking_id"] == policy.booking.id
+    assert answer["property_id"] == policy.booking.property_id
+    assert all(n.level == "info" for n in policy.c.notifications.list())
+
+
+@pytest.mark.parametrize("report_first", [True, False])
+async def test_reported_incident_does_not_leave_a_duplicate_text_request(policy, report_first):
+    run = policy.run(message_id="incident-message", guest_text="The shower is broken.")
+
+    async def report():
+        await policy.call("report_issue", run=run, description="The shower is broken.")
+
+    async def reply():
+        await policy.call("send_guest_reply", run=run,
+                          text="Thank you for the report. The host will review it.", host_follow_up=True)
+
+    if report_first:
+        await report()
+        await reply()
+    else:
+        await reply()
+        await report()
+    assert policy.c.host_answers.list() == []
+    assert run.state["issue_reported"] is True
+    # A different question on the same booking still reaches the Answers inbox.
+    await policy.call("send_guest_reply", run=policy.run(message_id="wifi-message", guest_text="Wi-Fi password?"),
+                      text="The host will provide the Wi-Fi details here.", host_follow_up=True)
+    answers = policy.c.host_answers.list()
+    assert len(answers) == 1 and answers[0]["source_message_id"] == "wifi-message"
 
 
 def change_conditions_during_calendar_io(policy, change):

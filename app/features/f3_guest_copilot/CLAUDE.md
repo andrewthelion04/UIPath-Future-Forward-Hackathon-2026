@@ -11,6 +11,7 @@ Răspunde la mesajele oaspeților consultând datele noastre: rezervarea, propri
 - Cereri de aprobare: `guest_request` cu tip și parametri validați (`early_check_in`, `late_check_out`, `extra_guests`, `pets`); la aprobare se revalidează condițiile și se trimite confirmarea canonică arătată hostului.
 
 ## Stare curentă
+- Întrebările pentru host sunt acum persistate în inboxul comun `host_answers`, în locul notificărilor generice de follow-up. Hostul răspunde din **Approvals / Answers**; `ChannelGateway` trimite textul exact cu sender `host`. Datele și endpointurile sunt comune, fără dependențe între feature-uri.
 - Agentul `f3_guest_copilot.reply` are uneltele: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `answer_offer`, `report_issue`, plus `finish` din buclă.
 - Întrebare informativă → citește contextul → răspunde.
 - Early check-in / late check-out → verifică noaptea relevantă → cere sau reutilizează aprobarea exactă → răspunde în funcție de status. Confirmarea cere și verificarea actuală a unei nopți libere; un calendar ocupat sau necunoscut cere intervenția manuală a hostului.

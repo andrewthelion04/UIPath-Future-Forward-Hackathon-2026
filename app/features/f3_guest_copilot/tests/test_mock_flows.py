@@ -80,7 +80,7 @@ def test_extra_guests_beyond_capacity_are_never_promised(client):
     booking = say(client, "Could we bring one extra guest?")
     assert guest_requests(client) == []
     assert "could not submit" in replies(client, booking)[-1]["body"]
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_extra_guest_request_without_a_count_asks_for_clarification(client):
@@ -120,7 +120,7 @@ def test_missing_details_are_not_invented_and_host_is_notified(client, text, for
     body = replies(client, booking)[-1]["body"]
     assert "do not have verified" in body or "do not have a verified" in body
     assert all(fragment not in body.lower() for fragment in forbidden)
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_access_instructions_use_only_host_notes(client):
@@ -137,7 +137,7 @@ def test_missing_access_instructions_request_host_follow_up(client):
     c.world.upsert_host(host)
     booking = say(client, "Please send the door access code.")
     assert "do not have verified access instructions" in replies(client, booking)[-1]["body"]
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_listed_parking_does_not_imply_an_allocated_or_free_space(client):
@@ -162,7 +162,7 @@ def test_unsupported_requests_and_unknown_facts_need_host_follow_up(client, text
     assert "do not have verified" in body and "host will follow up" in body
     assert "Check-in at" not in body
     assert guest_requests(client) == []
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_reported_issue_does_not_hide_an_unsupported_refund_request(client):
@@ -171,7 +171,7 @@ def test_reported_issue_does_not_hide_an_unsupported_refund_request(client):
     body = replies(client, booking)[-1]["body"]
     assert "informed the host" in body and "do not have verified details" in body
     assert guest_requests(client) == []
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json() == []
 
 
 def test_mixed_request_reuses_exact_confirmation_without_dropping_other_intents(client):
@@ -204,7 +204,7 @@ def test_two_different_exceptions_do_not_bypass_the_per_run_approval_limit(clien
     (approval,) = guest_requests(client)
     assert approval["payload"]["request"]["request_type"] == "early_check_in"
     assert "other request also needs the host's attention" in replies(client, booking)[-1]["body"]
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_issue_tool_failure_does_not_claim_the_incident_was_forwarded(client, monkeypatch):
@@ -221,7 +221,7 @@ def test_issue_tool_failure_does_not_claim_the_incident_was_forwarded(client, mo
     assert events_of(client, "IssueReported") == []
     body = replies(client, booking)[-1]["body"]
     assert "could not forward" in body and "I have informed" not in body
-    assert any("manual follow-up" in n["title"] for n in client.get("/notifications").json())
+    assert client.get("/answers").json()
 
 
 def test_calendar_failure_is_unknown_and_cannot_be_confirmed_automatically(client, monkeypatch):

@@ -118,6 +118,7 @@ class OwnerRezAdapter:
             receive_webhooks=bool(access_token),
             read_calendar=True,
             write_prices=True,
+            move_reservations=True,
         )
         self._ids = ids
         self._property_pricing: dict[str, tuple[str, float]] = {}
@@ -231,6 +232,23 @@ class OwnerRezAdapter:
         return reservations
 
     # --- MessagingPort -------------------------------------------------------------
+
+    async def move_reservation(self, booking_id: str, property_id: str) -> None:
+        external_id = self._external(RESERVATION, booking_id)
+        target_id = int(self._external(PROPERTY, property_id))
+        current = await self._request("GET", f"/v2/bookings/{external_id}")
+        if _status(current.get("status")) == BookingStatus.CANCELLED:
+            raise PmsError("Cannot move a cancelled OwnerRez booking")
+        if current.get("property_id") == target_id:
+            return  # o scriere anterioară poate fi deja confirmată de PMS
+        # Nu generăm taxe noi și nu rescriem datele, oaspeții sau canalul.
+        await self._request("PATCH", f"/v2/bookings/{external_id}", json={"property_id":target_id})
+        confirmed = await self._request("GET", f"/v2/bookings/{external_id}")
+        if (confirmed.get("property_id") != target_id
+                or confirmed.get("arrival") != current.get("arrival")
+                or confirmed.get("departure") != current.get("departure")
+                or _status(confirmed.get("status")) == BookingStatus.CANCELLED):
+            raise PmsError("OwnerRez relocation could not be verified; review the booking manually")
 
     async def send_message(self, booking_id: str, body: str) -> SentMessage:
         if not self.capabilities.send_messages:

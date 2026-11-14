@@ -1,5 +1,27 @@
 -- Tabelele nucleului comun. Tabelele unui feature stau în `app/features/<feature>/schema.sql`.
 
+CREATE TABLE IF NOT EXISTS property_overrides (
+    property_id TEXT PRIMARY KEY,
+    fields TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS host_answers (
+    id TEXT PRIMARY KEY,
+    booking_id TEXT NOT NULL,
+    property_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    context_note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    reply TEXT,
+    sent_message_id TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    answered_at TEXT,
+    UNIQUE(booking_id, source_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS hosts (
     id    TEXT PRIMARY KEY,
     name  TEXT NOT NULL,

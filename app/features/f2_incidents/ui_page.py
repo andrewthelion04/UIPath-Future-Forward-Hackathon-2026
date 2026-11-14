@@ -43,7 +43,8 @@ def record_answer(incident: dict, choice: str) -> None:
 
 incidents = load("/incidents")
 names = property_names(load("/properties"))
-guests = {b["id"]: b["guest_name"] for b in load("/bookings")}
+bookings = {b["id"]: b for b in load("/bookings")}
+guests = {key: b["guest_name"] for key,b in bookings.items()}
 
 if not incidents:
     st.info("No incidents. Send a staff report from the Simulator, or report a problem as a guest.")
@@ -79,6 +80,14 @@ for incident in incidents:
             facts.append(f"Resolution: {incident['resolution']}")
         if facts:
             st.markdown(multiline("\n".join(facts)))
+
+        booking = bookings.get(incident.get("booking_id"))
+        if incident["status"] == "relocated" and booking and booking["property_id"] != incident["relocation_property_id"]:
+            st.warning("The booking still belongs to another property. This relocation has not been applied in the PMS.")
+            if st.button("Review unapplied relocation", key=f"review_relocation_{incident['id']}"):
+                if act(api.post, f"/incidents/{incident['id']}/review-relocation", wait=True) is not None:
+                    flash("A new relocation review was requested. Check Approvals / Answers.")
+                    st.rerun()
 
         if incident["status"] == "awaiting_guest":
             st.caption(

@@ -255,10 +255,7 @@ def assess_incident_effects(
     text = " ".join(m["body"] for m in copilot).lower()
     drafts = before.get("drafts") or {}
     answers = [e for e in events if e["type"] == "GuestOfferAnswered"]
-    follow_ups = [
-        n for n in notifications
-        if n["feature"] == FEATURE and n.get("booking_id") == booking["id"] and "follow-up" in n["title"]
-    ]
+    follow_ups = [a for a in _json(client.get("/answers")) if a["booking_id"] == booking["id"]]
     promised_money = re.search(
         r"(?:will|'ll) (?:be )?refund|refund (?:is|has been) (?:approved|confirmed|issued|processed)|"
         r"you(?:'ll| will) (?:get|receive) (?:a |your )?(?:refund|discount|compensation)", text,
@@ -314,6 +311,7 @@ def assess_effects(
     approvals: list[dict[str, Any]],
     events: list[dict[str, Any]],
     notifications: list[dict[str, Any]],
+    host_answers: list[dict[str, Any]] | None = None,
 ) -> dict[str, bool]:
     """Verificări asupra efectelor; `finish` singur nu face un scenariu reușit."""
     inbound = [message for message in messages if message["direction"] == "inbound"]
@@ -353,9 +351,7 @@ def assess_effects(
                 "free parking is included", "parking is free",
             )),
             host_follow_up=any(
-                notification["feature"] == FEATURE
-                and notification.get("booking_id") == booking["id"]
-                for notification in notifications
+                answer["booking_id"] == booking["id"] for answer in (host_answers or [])
             ),
         )
     else:
@@ -445,7 +441,7 @@ def run_scenario(model: str, scenario: Scenario, *, timeout_s: float = 60) -> Ev
                     else:
                         result.checks.update(assess_effects(
                             scenario, booking, messages, _guest_approvals(client, booking["id"]),
-                            events, _json(client.get("/notifications")),
+                            events, _json(client.get("/notifications")), _json(client.get("/answers")),
                         ))
                     result.checks["event_handlers_succeeded"] = all(
                         handler["status"] == "ok"

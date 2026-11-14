@@ -11,6 +11,47 @@ export const API_URL: string = (
 const API_TOKEN = ((import.meta.env.WXT_API_TOKEN as string | undefined) ?? '').trim();
 const AUTH_HEADERS: Record<string, string> = API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {};
 
+export function subscribeUpdates(onChange: () => void, onStatus: (status: string) => void): () => void {
+  let stopped = false;
+  let socket: WebSocket | undefined;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let delay = 1000;
+  let version: string | undefined;
+  function connect() {
+    if (stopped) return;
+    onStatus('Connecting');
+    const url = new URL(API_URL);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = url.pathname.replace(/\/$/, '') + '/ws/updates';
+    socket = new WebSocket(url.toString());
+    socket.onopen = () => socket?.send(JSON.stringify({type:'authenticate', token:API_TOKEN}));
+    socket.onmessage = event => {
+      if (stopped) return;
+      try {
+        const data = JSON.parse(event.data) as {type: string; version: string};
+        if (!['snapshot','changed','heartbeat'].includes(data.type) || typeof data.version !== 'string') return;
+        onStatus('Live');
+        delay = 1000;
+        if (data.version !== version) {
+          version = data.version;
+          if (refreshTimer) clearTimeout(refreshTimer);
+          refreshTimer = setTimeout(() => { if (!stopped) onChange(); }, 200);
+        }
+      } catch { /* Ignore invalid frames; keep the current data. */ }
+    };
+    socket.onerror = () => socket?.close();
+    socket.onclose = () => {
+      if (stopped) return;
+      onStatus('Reconnecting');
+      retry = setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30000);
+    };
+  }
+  connect();
+  return () => { stopped = true; clearTimeout(retry); clearTimeout(refreshTimer); socket?.close(); };
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -113,6 +154,17 @@ export interface DecisionResult {
   applied: boolean;
 }
 
+export interface HostAnswer {
+  id: string;
+  booking_id: string;
+  guest_name: string;
+  property_name: string;
+  question: string;
+  context_note: string;
+  status: string;
+  reply: string | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -133,6 +185,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  answers: () => request<HostAnswer[]>('/answers'),
+  checkDelivery: (id: string, delivered: boolean) => request<HostAnswer>(`/answers/${id}/delivery-check`, {
+    method: 'POST', body: JSON.stringify({ delivered }),
+  }),
+  reply: (id: string, text: string) => request<HostAnswer>(`/answers/${id}/reply`, {
+    method: 'POST', body: JSON.stringify({ text }),
+  }),
   properties: () => request<Property[]>('/properties'),
   notifications: () => request<Notification[]>('/notifications'),
   approvals: () => request<Approval[]>('/approvals'),

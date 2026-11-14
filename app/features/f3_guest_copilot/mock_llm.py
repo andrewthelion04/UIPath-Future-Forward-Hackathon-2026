@@ -268,7 +268,7 @@ def _topic_flow(
         if failed(result):
             return _reply_or_finish(
                 request, done,
-                f"Hi {name}, I could not record your answer automatically. The host will contact you directly.",
+                f"Hi {name}, I could not record your answer automatically. The host can reply here.",
                 [str(result)], host_follow_up=True, follow_up_note=f'Guest answered an offer: "{text}"',
             )
         return finish("The guest's answer to the offer was recorded and acknowledged.",
@@ -278,8 +278,7 @@ def _topic_flow(
     if any(word in lowered for word in HANDOVER_WORDS):
         return _reply_or_finish(
             request, done,
-            f"Hi {name}, I understand. I have asked the host to contact you directly about this, "
-            "and they will get back to you as soon as possible.",
+            f"Hi {name}, I understand. I have passed your question to the host, who can reply here.",
             [f"open topic: {topics[0].get('title')}"],
             host_follow_up=True, follow_up_note=f'Guest wants the host directly: "{text}"',
         )

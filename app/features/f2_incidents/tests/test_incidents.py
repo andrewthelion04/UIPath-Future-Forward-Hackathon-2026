@@ -157,6 +157,10 @@ def test_relocation_accepted_by_the_guest_then_closed_by_the_host(client):
 
     incident = only_incident(client)
     assert incident["status"] == "relocated" and incident["guest_answer"] == "accept"
+    moved = client.get(f"/bookings/{lukas['id']}").json()
+    assert moved["property_id"] == target["id"]
+    assert client.post("/integrations/mock/sync").status_code == 200
+    assert client.get(f"/bookings/{lukas['id']}").json()["property_id"] == target["id"]
     # Oaspetele a primit exact textele din aprobare: oferta, apoi confirmarea.
     assert messages(client, lukas) == [
         quoted(relocate, "Guest will receive:"),

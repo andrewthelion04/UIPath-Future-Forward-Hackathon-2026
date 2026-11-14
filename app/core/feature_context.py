@@ -29,6 +29,7 @@ from app.core.id_mapper import IdMapper
 from app.core.notifications import NotificationService
 from app.core.sync_service import SyncService
 from app.core.world_repo import WorldRepository
+from app.core.host_answers import HostAnswers
 from app.ports.calendar import CalendarPort
 from app.ports.llm import LLMPort, MockPolicy
 from app.ports.market import MarketDataPort
@@ -60,6 +61,7 @@ class FeatureContext:
     approvals: ApprovalService
     notifications: NotificationService
     channel: ChannelGateway
+    host_answers: HostAnswers
     calendar: CalendarPort
     world: WorldRepository
     conversations: ConversationLog

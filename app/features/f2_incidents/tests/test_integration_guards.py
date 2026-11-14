@@ -153,7 +153,7 @@ def test_a_property_that_cannot_be_blocked_is_not_offered_for_relocation(waiting
     container = waiting.app.state.container
     capabilities = container.pms.get("mock").capabilities
     with patch.object(container.pms.get("mock"), "capabilities",
-                      capabilities.model_copy(update={"write_availability": False})):  # fmt: skip
+                      capabilities.model_copy(update={"write_availability": False, "move_reservations": False})):  # fmt: skip
         opened = report(waiting, "Calea Victoriei Apartment", AC)
 
     assert opened["relocation_property_id"] is None

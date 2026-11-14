@@ -97,6 +97,69 @@ Problemele sunt descrise în `docs/INTEGRATION_AUDIT_2026-11-14.md`; aici sunt m
 
 ## 3. Rețetă: cum extinzi un feature
 
+### Workspace host: editări locale și răspunsuri directe (14 noiembrie 2026)
+
+Relocarea F2 execută acum o mutare reală a rezervării, nu doar blocarea calendarului:
+capabilitatea `move_reservations` și operația `ReservationsPort.move_reservation`.
+Candidații sunt limitați la același PMS; o rezervare OwnerRez nu poate fi mutată pe mock.
+Adaptorul OwnerRez citește rezervarea, trimite `PATCH /v2/bookings/{id}` cu numai
+`property_id`, apoi verifică proprietatea, datele și starea prin GET. Nu trimite
+`generate_charges`. Refuzul unui canal conectat nu produce confirmare de relocare.
+F2 sincronizează booking-ul înaintea confirmării. Operația mută întreaga rezervare,
+cu datele păstrate; nu împarte un sejur început în două rezervări. Disponibilitatea
+țintei se verifică pe întregul interval. Scrierea generică a disponibilității OwnerRez
+rămâne indisponibilă; mutarea rezervării este o operație distinctă.
+
+Incidentele istorice `relocated` cu booking încă pe altă proprietate afișează un
+avertisment și acțiunea **Review unapplied relocation** în F2. Aceasta retrage închiderea
+pendinte și generează o nouă propunere, fără a executa o mutare nouă neaprobată.
+Sursa protocolului: https://api.ownerrez.com/openapi/v2.json (`BookingEditModel.property_id`).
+
+Actualizările live folosesc `/ws/updates`: după autentificarea prin primul frame JSON
+(`token`, fără secret în URL), serverul transmite doar tipul invalidării și o versiune
+opacă. Originea browserului este limitată la UI-uri locale și extensii Chrome, ca la
+REST. Hook-ul `Database.on_change` notifică după scrieri autocommit sau după commitul
+tranzacției exterioare, niciodată pentru rollback. Clienții recitesc REST, fără a duplica
+modelele de business în protocolul WebSocket. Rafalele se reunesc și coada fiecărui client
+are un singur element, evitând acumulările pentru clienți lenți.
+
+Extensia înlocuiește polling-ul de 5 secunde cu WebSocket, reconectare cu backoff și o
+recitire la conectare/reconectare. Streamlit ține conexiunea WebSocket într-un listener
+partajat în backend, astfel încât API_TOKEN nu ajunge în browser. Un fragment verifică
+versiunea listenerului în memorie o dată pe secundă și rerulează aplicația numai la
+schimbare; nu face polling REST. Widgeturile păstrează cheile existente, inclusiv
+drafturile de răspuns. Endpointul nu sincronizează singur datele din PMS: schimbările
+OwnerRez trebuie să ajungă prin webhook sau prin sync. Arhitectura rămâne single-process;
+un deployment cu mai mulți workeri ar necesita un broker comun de invalidări.
+
+`ChannelGateway` creează o notificare `info` după fiecare răspuns livrat cu sender
+`copilot`: „New automated answer by Agent in chat with …”, cu proprietatea și providerul
+în corp. Nu copiază textul conversației și nu etichetează drept automate mesajele scrise
+de host. O trimitere eșuată păstrează notificarea de eroare, fără notificare informativă.
+
+La cererea utilizatorului, proprietățile pot fi editate din World data. Datele PMS rămân
+oglinda brută; `property_overrides` păstrează separat numai câmpurile modificate local.
+`WorldRepository` aplică override-urile la citire, astfel încât sincronizarea actualizează
+datele importate fără să șteargă editările hostului. `PUT /properties/{id}` validează
+câmpurile editabile; ID-ul și providerul nu se pot modifica. Aceste editări nu scriu în PMS.
+`DELETE /properties/{id}/overrides` revine la ultima versiune importată. Aceasta extinde
+regula inițială „proprietățile se scriu doar prin SyncService” printr-un strat local explicit.
+
+`host_answers` este inboxul comun al întrebărilor predate hostului. F3 creează un element
+deduplicat după rezervare și mesajul sursă în locul notificării generice pentru follow-up.
+`GET /answers` și `POST /answers/{id}/reply` sunt folosite de Streamlit și extensie.
+Hostul trimite textul exact, fără reformulare LLM, prin `ChannelGateway`, cu sender `host`;
+mesajul se păstrează în conversație și emite `GuestMessageSent`. Nu este o aprobare F3
+automată și nu actualizează condițiile rezervării. Trimiterile concurente sunt serializate;
+repetarea aceleiași trimiteri finalizate este idempotentă. Întreruperea în timpul livrării
+lasă o stare incertă persistentă: hostul verifică PMS-ul și folosește
+`POST /answers/{id}/delivery-check` înaintea unei reîncercări, fără duplicare automată.
+
+Calendarul World data este o grilă lunară, luni–duminică, cu bare de rezervare împărțite
+la limita săptămânilor și checkout exclusiv. Vederea generală folosește rezervările
+importate; selecția unei proprietăți citește suplimentar disponibilitatea și tarifele din
+PMS. Nu introduce capabilități de scriere a disponibilității în OwnerRez.
+
 1. Citește `CLAUDE.md`-ul feature-ului.
 2. Lucrează doar în `app/features/<feature>/`.
 3. **Asculți un eveniment:** `ctx.subscribe(Eveniment, handler)` în `register(ctx)`.
