@@ -1,0 +1,33 @@
+{
+  "case": "positive_night_becomes_free",
+  "max_discount": 100,
+  "undercut": 99.9,
+  "base_price": 70.0,
+  "comparable": 0.01,
+  "schedule": [
+    {
+      "day": "2026-06-03",
+      "original_price": 0.01,
+      "floor_price": 0.0,
+      "proposed_price": 0.0
+    },
+    {
+      "day": "2026-06-04",
+      "original_price": 70.0,
+      "floor_price": 0.0,
+      "proposed_price": 0.01
+    },
+    {
+      "day": "2026-06-05",
+      "original_price": 80.5,
+      "floor_price": 0.0,
+      "proposed_price": 0.01
+    }
+  ],
+  "status": "applied",
+  "actual_prices": [
+    0.0,
+    0.01,
+    0.01
+  ]
+}

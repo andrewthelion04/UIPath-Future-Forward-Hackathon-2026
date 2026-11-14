@@ -1,0 +1,213 @@
+[
+  {
+    "case": "booking_property_mismatch",
+    "discrepancy": true,
+    "observed": {
+      "incident_property": "Old Town Studio",
+      "affected_guest": "Lukas Mueller",
+      "guest_actual_property": "Calea Victoriei Apartment",
+      "approval_summary": "Reported by Staff (staff), severity medium: The air conditioning is broken\nMaintenance (Andrei Stan) replied: \"The unit probably needs a replacement part. I can only get it tomorrow morning, so realistically about 30 hours until it works again.\"\nEstimated fix time: 30 h (confidence medium).\nAffected stay: Lukas Mueller, 2 guest(s), 2026-05-31 to 2026-06-04; the guest is in the property now.\nRecommendation: Offer relocation. The guest is in the property and the fix needs 30 h, more than the 3 h a guest can reasonably wait."
+    }
+  },
+  {
+    "case": "changed_target_compatibility",
+    "discrepancy": true,
+    "observed": {
+      "response": 200,
+      "status": "relocated",
+      "guest_count": 2,
+      "target_capacity": 1,
+      "target_city": "Other city",
+      "messages": [
+        "Hi Lukas, we are really sorry: there is a problem at Calea Victoriei Apartment (the air conditioning is broken). Our maintenance team expects to fix it within about 30 hours. So that your stay is not affected, we can move you to Herastrau Family Flat (Soseaua Nordului 54, Bucharest) for the rest of your stay, at no extra cost. Would you like to move? Just reply to this message.",
+        "Great, Lukas! Your stay continues at Herastrau Family Flat, Soseaua Nordului 54, Bucharest. We will send you the check-in details in a moment. Thank you for understanding, and sorry again for the trouble."
+      ]
+    }
+  },
+  {
+    "case": "failed_block_still_confirms",
+    "discrepancy": true,
+    "observed": {
+      "status": "relocated",
+      "target_still_available": [
+        true,
+        true,
+        true
+      ],
+      "messages": [
+        "Hi Lukas, we are really sorry: there is a problem at Calea Victoriei Apartment (the air conditioning is broken). Our maintenance team expects to fix it within about 30 hours. So that your stay is not affected, we can move you to Herastrau Family Flat (Soseaua Nordului 54, Bucharest) for the rest of your stay, at no extra cost. Would you like to move? Just reply to this message.",
+        "Great, Lukas! Your stay continues at Herastrau Family Flat, Soseaua Nordului 54, Bucharest. We will send you the check-in details in a moment. Thank you for understanding, and sorry again for the trouble."
+      ],
+      "notifications": [
+        "Could not block Herastrau Family Flat in the calendar (simulated calendar write failure); block it manually.\nThe reservation itself must still be moved in the PMS.\nRepair task T-1 created."
+      ]
+    }
+  },
+  {
+    "case": "invalid_calendar_false_free",
+    "discrepancy": true,
+    "observed": {
+      "method_returns_free": true,
+      "relocation_offered": true
+    }
+  },
+  {
+    "case": "concurrent_relocations_same_target",
+    "discrepancy": true,
+    "observed": {
+      "states": [
+        "relocated",
+        "relocated"
+      ],
+      "target": "Herastrau Family Flat",
+      "guests": [
+        "Lukas Mueller",
+        "Emma Johnson"
+      ],
+      "calendar_checks": 2
+    }
+  },
+  {
+    "case": "failed_offer_still_auto_relocates",
+    "discrepancy": true,
+    "observed": {
+      "status": "relocated",
+      "messages": [
+        {
+          "status": "failed",
+          "body": "Hi Lukas, we are really sorry: there is a problem at Calea Victoriei Apartment (the air conditioning is broken). Our maintenance team expects to fix it within about 30 hours. So that your stay is not affected, we can move you to Herastrau Family Flat (Soseaua Nordului 54, Bucharest) for the rest of your stay, at no extra cost. Would you like to move? Just reply to this message."
+        },
+        {
+          "status": "sent",
+          "body": "Great, Lukas! Your stay continues at Herastrau Family Flat, Soseaua Nordului 54, Bucharest. We will send you the check-in details in a moment. Thank you for understanding, and sorry again for the trouble."
+        }
+      ],
+      "offered_notification": true
+    }
+  },
+  {
+    "case": "documented_relocation_internal_state_gap",
+    "discrepancy": true,
+    "observed": {
+      "status": "relocated",
+      "confirmed_target": "Soseaua Nordului 54, Bucharest",
+      "subsequent_copilot_reply": "Hi Lukas, Check-in at Calea Victoriei Apartment (Calea Victoriei 88, Bucharest) is from 15:00 on 2026-05-31, and check-out is by 11:00 on 2026-06-04.",
+      "documented": true
+    }
+  },
+  {
+    "case": "documented_chat_acceptance_not_wired",
+    "discrepancy": true,
+    "observed": {
+      "status": "awaiting_guest",
+      "guest_answer": null,
+      "f3_reply": "Hi Lukas, I do not have verified information to answer that question; the host will follow up.",
+      "source_response": {
+        "outcome": "published",
+        "detail": "",
+        "event_id": "evt_1814ab60dff0",
+        "correlation_id": "evt_1814ab60dff0",
+        "message_id": "msg_c237819c3481",
+        "completed": true
+      },
+      "documented": true
+    }
+  },
+  {
+    "case": "positive_f3_cancellation_guard",
+    "discrepancy": false,
+    "observed": {
+      "passed": true,
+      "outbound_before": 1,
+      "outbound_after": 1,
+      "manual_warning": true
+    }
+  },
+  {
+    "case": "positive_f2_decision_idempotence",
+    "discrepancy": false,
+    "observed": {
+      "passed": true,
+      "first_applied": true,
+      "second_applied": false,
+      "messages_before": 2,
+      "messages_after": 2
+    }
+  },
+  {
+    "case": "single_option_hides_reviewed_guest_text",
+    "discrepancy": true,
+    "observed": {
+      "api_option_description": "Guest will receive: \"Hi Lukas, good news: the problem at Calea Victoriei Apartment has been fixed. Thank you for your patience, and enjoy the rest of your stay!\"",
+      "summary_contains_exact_text": false,
+      "ui_displays_exact_text": false,
+      "ui_exceptions": []
+    }
+  },
+  {
+    "case": "old_closure_after_new_unresolved_report",
+    "discrepancy": true,
+    "observed": {
+      "reports_before_close": 2,
+      "closure_unchanged": true,
+      "closure_summary": "The problem at Calea Victoriei Apartment (Water is leaking under the kitchen sink.) has been fixed.\nIt was reported 1 time(s), first by Staff (staff).\nMaintenance estimated 2 h.\nYou chose to fix it in place.\nTask T-1 done by Andrei Stan: Replaced the seal under the sink and dried the cabinet. No more leaking.\n\nApprove to close the incident. Reject (with a note) to send the staff back.",
+      "final_status": "resolved",
+      "final_guest_reply": "Hi Lukas, good news: the problem at Calea Victoriei Apartment has been fixed. Thank you for your patience, and enjoy the rest of your stay!"
+    }
+  },
+  {
+    "case": "relocation_to_known_broken_property",
+    "discrepancy": true,
+    "observed": {
+      "known_target_incident_status": "awaiting_decision",
+      "known_target_problem": "There is mold in the bathroom",
+      "offered_target": "Herastrau Family Flat"
+    }
+  },
+  {
+    "case": "distinct_locations_same_category_merge",
+    "discrepancy": true,
+    "observed": {
+      "incident_count": 1,
+      "report_count": 2,
+      "reports": [
+        "Water is leaking under the kitchen sink.",
+        "The bathroom shower is leaking badly."
+      ],
+      "approval_count": 1
+    }
+  },
+  {
+    "case": "timeout_lost_on_publication_failure",
+    "discrepancy": true,
+    "observed": {
+      "status": "awaiting_staff",
+      "deadline": null,
+      "retry_events": 0
+    }
+  },
+  {
+    "case": "positive_concurrent_duplicate_stress",
+    "discrepancy": false,
+    "observed": {
+      "passed": true,
+      "incident_count": 1,
+      "report_count": 20,
+      "approval_count": 1,
+      "handler_errors": [],
+      "foreign_key_errors": []
+    }
+  },
+  {
+    "case": "positive_full_f2_llm_outage_and_f3_recovery",
+    "discrepancy": false,
+    "observed": {
+      "passed": true,
+      "final_status": "resolved",
+      "drafts_source": "template",
+      "closure_summary_fallback": true,
+      "f3_after_recovery": "Hi Lukas, Check-in at Calea Victoriei Apartment (Calea Victoriei 88, Bucharest) is from 15:00 on 2026-05-31, and check-out is by 11:00 on 2026-06-04.",
+      "handler_errors": []
+    }
+  }
+]

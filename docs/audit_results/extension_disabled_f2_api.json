@@ -1,0 +1,18 @@
+{
+  "approvals": {
+    "status": 200,
+    "items": 1
+  },
+  "notifications": {
+    "status": 200,
+    "items": 1
+  },
+  "properties": {
+    "status": 200,
+    "items": 4
+  },
+  "incidents": {
+    "status": 404,
+    "items": null
+  }
+}

@@ -1,0 +1,40 @@
+[
+  {
+    "case": "aggregate_parent_timeout_partial_apply",
+    "prices": [
+      65.96,
+      70.0,
+      80.5
+    ],
+    "proposal_status": "awaiting_approval",
+    "approval_status": "approved",
+    "handler": {
+      "status": "timeout",
+      "error": "handler exceeded 0.15s"
+    },
+    "repeated_decision_applied": false,
+    "notifications": [
+      {
+        "title": "f5_relisting: handler timeout on ApprovalDecided",
+        "body": "f5_relisting.on_decision[relist_price]: handler exceeded 0.15s\n\nOther features were not affected."
+      },
+      {
+        "title": "Approval needed: Relist Old Town Studio at 65.96–75.85 EUR/night?",
+        "body": "Emma Johnson cancelled 2026-06-03 to 2026-06-06, 2 day(s) before check-in.\nCheapest comparable listing with the same amenities: Lipscani Cozy Studio at 68 EUR/night (source: mock).\nNightly prices: 65.96–75.85 EUR/night. Each night stays within its host floor and regular price.\n2026-06-03: 70 → 65.96 EUR (floor 52.5).\n2026-06-04: 70 → 65.96 EUR (floor 52.5).\n2026-06-05: 80.5 → 75.85 EUR (floor 60.38).\nExpires at check-in: 2026-06-03T15:00:00+03:00."
+      }
+    ]
+  },
+  {
+    "case": "f2_relocation_after_f5_calendar_read",
+    "proposal_status": "applied",
+    "incident_status": "relocated",
+    "first_night": {
+      "property_id": "prop_35b3f0a5902c",
+      "day": "2026-06-03",
+      "available": false,
+      "price": 65.96,
+      "currency": "EUR"
+    },
+    "note": "F2 blocked the first night after F5 free snapshot; F5 then discounted the occupied night. Known port no-CAS limitation extends to local cross-feature operations."
+  }
+]

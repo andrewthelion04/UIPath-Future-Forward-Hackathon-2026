@@ -1,0 +1,87 @@
+{
+  "schedules": 20000,
+  "night_checks": 149140,
+  "violations": 9,
+  "examples": [
+    {
+      "case": 1409,
+      "base": 1717.54,
+      "market": 678.08,
+      "discount": 100,
+      "undercut": 99.9,
+      "night": {
+        "day": "2026-06-08",
+        "original_price": 0.09,
+        "floor_price": 0.0,
+        "proposed_price": 0.0
+      },
+      "failed": [
+        "positive"
+      ]
+    },
+    {
+      "case": 5249,
+      "base": 557.45,
+      "market": 18.83,
+      "discount": 100,
+      "undercut": 99.9,
+      "night": {
+        "day": "2026-06-12",
+        "original_price": 58.0,
+        "floor_price": 0.0,
+        "proposed_price": 0.0
+      },
+      "failed": [
+        "positive"
+      ]
+    },
+    {
+      "case": 6677,
+      "base": 1694.7,
+      "market": 182.41,
+      "discount": 100,
+      "undercut": 99.9,
+      "night": {
+        "day": "2026-06-06",
+        "original_price": 31.39,
+        "floor_price": 0.0,
+        "proposed_price": 0.0
+      },
+      "failed": [
+        "positive"
+      ]
+    },
+    {
+      "case": 6855,
+      "base": 513.31,
+      "market": 593.91,
+      "discount": 100,
+      "undercut": 99.9,
+      "night": {
+        "day": "2026-06-05",
+        "original_price": 1.74,
+        "floor_price": 0.0,
+        "proposed_price": 0.0
+      },
+      "failed": [
+        "positive"
+      ]
+    },
+    {
+      "case": 6959,
+      "base": 1210.53,
+      "market": 6.15,
+      "discount": 100,
+      "undercut": 99,
+      "night": {
+        "day": "2026-06-05",
+        "original_price": 78.92,
+        "floor_price": 0.0,
+        "proposed_price": 0.0
+      },
+      "failed": [
+        "positive"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "case": "changed_discount_policy",
+    "max_discount_now": 0,
+    "before": [
+      70.0,
+      70.0,
+      80.5
+    ],
+    "after": [
+      65.96,
+      65.96,
+      75.85
+    ],
+    "proposal_status": "applied",
+    "approval_status": "approved"
+  },
+  {
+    "case": "decision_event_without_persisted_approval",
+    "approval_status": "pending",
+    "proposal_status": "applied",
+    "before": [
+      70.0,
+      70.0,
+      80.5
+    ],
+    "after": [
+      65.96,
+      65.96,
+      75.85
+    ]
+  },
+  {
+    "case": "host_checkin_time_earlier_after_proposal",
+    "checkin_time_now": "11:00",
+    "now_local": "2026-06-03T11:30+03:00",
+    "proposal_expiry": "2026-06-03T15:00:00+03:00",
+    "proposal_status": "applied",
+    "before": [
+      70.0,
+      70.0,
+      80.5
+    ],
+    "after": [
+      65.96,
+      65.96,
+      75.85
+    ]
+  }
+]

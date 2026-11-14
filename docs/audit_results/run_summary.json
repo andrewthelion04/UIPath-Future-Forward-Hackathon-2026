@@ -1,0 +1,151 @@
+{
+  "date": "2026-11-14",
+  "commit": "4213071",
+  "existing_pytest": {
+    "passed": 513,
+    "elapsed_s": 48.61
+  },
+  "extension_compile": "passed",
+  "extension_build": "passed",
+  "feature_switch_combinations": 32,
+  "parallel_http_requests": 45,
+  "duplicate_host_decisions": 12,
+  "f2_f3_extra_scenarios": 17,
+  "f4_extra_probes": 9,
+  "core_extra_probes": 11,
+  "pricing_schedules": 20000,
+  "pricing_nights_checked": 149140,
+  "zero_price_counterexamples": 9,
+  "live_external_api_calls": 0,
+  "production_sources_changed": false,
+  "live_local_smoke": {
+    "transport": "real local HTTP + Streamlit AppTest",
+    "api_url": "http://127.0.0.1:8017",
+    "ui_url": "http://127.0.0.1:8517",
+    "external_services": "all mock, no real external keys used",
+    "checks": {
+      "all_features_loaded": true,
+      "f1_to_f3_information_reply": true,
+      "f3_to_f2_incident_approved_and_closed": true,
+      "f4_all_properties_analyzed": true,
+      "f1_cancellation_to_f5_approved_prices": true,
+      "no_handler_errors": true,
+      "all_agent_runs_finished": true
+    },
+    "health": {
+      "status": "ok",
+      "today": "2026-06-01",
+      "providers": {
+        "pms": "mock",
+        "llm": "mock",
+        "reviews": "mock",
+        "market": "mock"
+      },
+      "pms_connections": [
+        "mock"
+      ],
+      "market_attribution": null,
+      "features": [
+        {
+          "name": "f1_pms_integration",
+          "loaded": true,
+          "error": null
+        },
+        {
+          "name": "f2_incidents",
+          "loaded": true,
+          "error": null
+        },
+        {
+          "name": "f3_guest_copilot",
+          "loaded": true,
+          "error": null
+        },
+        {
+          "name": "f4_review_analysis",
+          "loaded": true,
+          "error": null
+        },
+        {
+          "name": "f5_relisting",
+          "loaded": true,
+          "error": null
+        }
+      ]
+    },
+    "ui_http_status": {
+      "root": 200,
+      "health": 200
+    },
+    "incident": {
+      "status": "resolved",
+      "tasks": 1
+    },
+    "f4": {
+      "insights": 4,
+      "snapshots": 4,
+      "structured_recommendations": 9
+    },
+    "f5": {
+      "status": "applied",
+      "nightly_prices": [
+        65.96,
+        65.96,
+        75.85
+      ]
+    },
+    "event_counts": {
+      "ApprovalDecided": 3,
+      "ApprovalRequested": 3,
+      "BookingCancelled": 1,
+      "EstimateReady": 1,
+      "GuestMessageReceived": 2,
+      "GuestMessageSent": 4,
+      "IncidentDecided": 1,
+      "IncidentResolved": 1,
+      "IncidentTaskCompleted": 1,
+      "IssueReported": 1,
+      "PropertyReviewAnalysisRequested": 4,
+      "ReviewAnalysisRequested": 1,
+      "SimStaffReplyDue": 1,
+      "SimTaskDue": 1,
+      "StaffContactRequested": 1,
+      "StaffReplied": 1
+    },
+    "handler_runs": 18,
+    "agent_runs": {
+      "count": 12,
+      "by_feature": {
+        "f4_review_analysis": 4,
+        "f2_incidents": 6,
+        "f3_guest_copilot": 2
+      }
+    },
+    "notifications": {
+      "count": 10,
+      "errors": []
+    },
+    "pages": {
+      "f3_guest_copilot": {
+        "exceptions": 0,
+        "chat_messages": 4,
+        "markdown_elements": 6
+      },
+      "f4_review_analysis": {
+        "exceptions": 0,
+        "chat_messages": 0,
+        "markdown_elements": 37
+      }
+    },
+    "success": true,
+    "api_http_status": 200,
+    "cleanup": {
+      "own_processes_stopped": true,
+      "ports_without_listeners": [
+        8017,
+        8517
+      ],
+      "temporary_database_removed": true
+    }
+  }
+}

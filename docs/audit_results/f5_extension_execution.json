@@ -1,0 +1,58 @@
+[
+  {
+    "script": "f5.py",
+    "output": "f5.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "f5_advanced.py",
+    "output": "f5_advanced.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "f5_zero_price.py",
+    "output": "f5_zero_price.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "f5_pricing_stress.py",
+    "output": "f5_pricing_stress.json",
+    "exit_code": 1,
+    "meaning": "counterexamples found",
+    "portable_cwd": true
+  },
+  {
+    "script": "extension_fixture.py",
+    "output": "extension_disabled_f2_api.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "extension_refresh.js",
+    "output": "extension_disabled_f2_refresh.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "extension_race_fixture.py",
+    "output": "extension_refresh_race_api.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  },
+  {
+    "script": "extension_refresh_race.js",
+    "output": "extension_refresh_race_state.json",
+    "exit_code": 0,
+    "meaning": "reported observations reproduced",
+    "portable_cwd": true
+  }
+]

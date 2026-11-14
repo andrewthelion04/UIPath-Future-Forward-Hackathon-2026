@@ -1,0 +1,12 @@
+{
+  "actual_component_refresh_state": {
+    "approvals": [],
+    "notifications": [],
+    "properties": [],
+    "incidents": [],
+    "error": "Not Found",
+    "loaded": true
+  },
+  "expected_usable_approvals": 1,
+  "expected_usable_properties": 4
+}

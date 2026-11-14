@@ -1,0 +1,10 @@
+{
+  "post_response": {
+    "status": "published",
+    "completed": false
+  },
+  "success_messages": [
+    "Analysis finished for All properties. See Notifications for what changed."
+  ],
+  "post_calls": 1
+}

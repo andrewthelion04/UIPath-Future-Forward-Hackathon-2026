@@ -1,0 +1,20 @@
+{
+  "configured_api_url": "https://audit-api.example.invalid",
+  "observed_host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "isolated_custom_build_succeeded": true,
+  "custom_api_url_present_in_bundle": true,
+  "permissions_derived_from_custom_api_url": false,
+  "browser_request_blocking_proven": false,
+  "qualification": "The API currently allows chrome-extension origins via CORS. The manifest mismatch is confirmed; browser request blocking was not tested and must not be asserted as an observed result.",
+  "source_refs": [
+    "extension/wxt.config.ts:11",
+    "extension/lib/api.ts:5"
+  ],
+  "official_docs": [
+    "https://developer.chrome.com/docs/extensions/develop/concepts/network-requests",
+    "https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns"
+  ]
+}

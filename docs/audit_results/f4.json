@@ -1,0 +1,208 @@
+[
+  {
+    "case": "concurrent_same_property",
+    "property_id": "prop_35b3f0a5902c",
+    "snapshots": [
+      {
+        "id": "snap_6c68dd180442",
+        "property_id": "prop_35b3f0a5902c"
+      }
+    ],
+    "insights": [
+      {
+        "id": "ins_57c3ded092b9",
+        "property_id": "prop_35b3f0a5902c",
+        "snapshot_id": "snap_6c68dd180442",
+        "recommendations": "1. [High] Wi-Fi: Upgrade the unreliable Wi-Fi router.",
+        "evidence": "[\"Wi-Fi: \\\"The wifi was unusable.\\\"\"]"
+      },
+      {
+        "id": "ins_fe408589678e",
+        "property_id": "prop_35b3f0a5902c",
+        "snapshot_id": "snap_6c68dd180442",
+        "recommendations": "1. [High] Wi-Fi: Upgrade the unreliable Wi-Fi router.",
+        "evidence": "[\"Wi-Fi: \\\"The wifi was unusable.\\\"\"]"
+      }
+    ],
+    "recommendations": [
+      {
+        "theme": "Wi-Fi",
+        "action": "Upgrade the unreliable Wi-Fi router.",
+        "quotes": "[\"The wifi was unusable.\"]"
+      },
+      {
+        "theme": "Wi-Fi",
+        "action": "Upgrade the unreliable Wi-Fi router.",
+        "quotes": "[\"The wifi was unusable.\"]"
+      }
+    ],
+    "notification_titles": [
+      "Review recommendations for Old Town Studio",
+      "Review recommendations for Old Town Studio"
+    ],
+    "f4_runs": 2
+  },
+  {
+    "case": "finish_bypasses_recommendation_validation",
+    "property_id": "prop_35b3f0a5902c",
+    "snapshots": [
+      {
+        "id": "snap_1c3d181c3b50",
+        "property_id": "prop_35b3f0a5902c"
+      }
+    ],
+    "insights": [
+      {
+        "id": "ins_8670b3fe998e",
+        "property_id": "prop_35b3f0a5902c",
+        "snapshot_id": "snap_1c3d181c3b50",
+        "recommendations": "Replace all mattresses immediately: 20 guests reported bed bugs.",
+        "evidence": "[\"Every bed has bugs - a quote nobody wrote.\"]"
+      }
+    ],
+    "recommendations": [],
+    "notification_titles": [
+      "Review recommendations for Old Town Studio"
+    ],
+    "f4_runs": 1
+  },
+  {
+    "case": "wrong_property_source_cross_contaminates",
+    "property_id": "prop_35b3f0a5902c",
+    "snapshots": [
+      {
+        "id": "snap_023ab0123871",
+        "property_id": "property_other"
+      }
+    ],
+    "insights": [
+      {
+        "id": "ins_f5a0e0efa807",
+        "property_id": "prop_35b3f0a5902c",
+        "snapshot_id": "snap_023ab0123871",
+        "recommendations": "1. [High] Wi-Fi: Upgrade the unreliable Wi-Fi router.",
+        "evidence": "[\"Wi-Fi: \\\"The wifi was unusable.\\\"\"]"
+      }
+    ],
+    "recommendations": [
+      {
+        "theme": "Wi-Fi",
+        "action": "Upgrade the unreliable Wi-Fi router.",
+        "quotes": "[\"The wifi was unusable.\"]"
+      }
+    ],
+    "notification_titles": [
+      "Review recommendations for Old Town Studio"
+    ],
+    "f4_runs": 1
+  },
+  {
+    "case": "wrong_property_review_items_cross_contaminate",
+    "property_id": "prop_35b3f0a5902c",
+    "snapshots": [
+      {
+        "id": "snap_eb7c56df2934",
+        "property_id": "prop_35b3f0a5902c"
+      }
+    ],
+    "insights": [
+      {
+        "id": "ins_2111063dad78",
+        "property_id": "prop_35b3f0a5902c",
+        "snapshot_id": "snap_eb7c56df2934",
+        "recommendations": "1. [High] Wi-Fi: Upgrade the unreliable Wi-Fi router.",
+        "evidence": "[\"Wi-Fi: \\\"The wifi was unusable.\\\"\"]"
+      }
+    ],
+    "recommendations": [
+      {
+        "theme": "Wi-Fi",
+        "action": "Upgrade the unreliable Wi-Fi router.",
+        "quotes": "[\"The wifi was unusable.\"]"
+      }
+    ],
+    "notification_titles": [
+      "Review recommendations for Old Town Studio"
+    ],
+    "f4_runs": 1
+  },
+  {
+    "case": "blank_recommendation_and_reversed_quote",
+    "stored": [
+      {
+        "theme": "",
+        "priority": "high",
+        "action": "",
+        "quotes": [
+          "wifi was unusable"
+        ]
+      }
+    ],
+    "reversed_quote_accepted": true
+  },
+  {
+    "case": "healthy_restart_reordered_cache_then_source_failure",
+    "after_unchanged": {
+      "f4_review_snapshots": 1,
+      "f4_insights": 1,
+      "agent_runs": 1
+    },
+    "fallback_after_restart": true,
+    "snapshots_after_fallback": 1
+  },
+  {
+    "case": "apify_malformed_and_cross_listing_payload",
+    "requested_listing": "https://www.airbnb.com/rooms/AUDIT-A",
+    "source_listing_of_first_item": "https://www.airbnb.com/rooms/AUDIT-B",
+    "accepted_reviews": [
+      {
+        "id": "rev_0019224ddceb",
+        "property_id": "prop_35b3f0a5902c",
+        "rating": 1.0,
+        "text": "Pests at another property.",
+        "author": "",
+        "reviewed_on": null,
+        "source": "apify"
+      },
+      {
+        "id": "rev_1c151a54f722",
+        "property_id": "prop_35b3f0a5902c",
+        "rating": 1.0,
+        "text": "Boolean rating is not a star score.",
+        "author": "",
+        "reviewed_on": null,
+        "source": "apify"
+      },
+      {
+        "id": "rev_1c151a54f722",
+        "property_id": "prop_35b3f0a5902c",
+        "rating": 1.0,
+        "text": "Boolean rating is not a star score.",
+        "author": "",
+        "reviewed_on": null,
+        "source": "apify"
+      }
+    ],
+    "count": 3,
+    "unique_ids": 2
+  },
+  {
+    "case": "concurrent_old_analysis_finishes_after_new",
+    "insights_newest_first": [
+      {
+        "recommendations": "1. [High] Wi-Fi: Unstable or slow Wi-Fi: test the speed in every room, then upgrade the router or the plan.",
+        "snapshot_id": "snap_a66eedcfc501"
+      },
+      {
+        "recommendations": "1. [High] Noise: Noise complaints: mention it honestly in the listing and provide earplugs or better window sealing.",
+        "snapshot_id": "snap_7aac7a25b815"
+      }
+    ],
+    "latest_snapshot": {
+      "id": "snap_7aac7a25b815",
+      "reviews": "[{\"id\": \"current-review\", \"property_id\": \"prop_35b3f0a5902c\", \"rating\": 2.0, \"text\": \"The street was noisy at night.\", \"author\": \"\", \"reviewed_on\": null, \"source\": \"audit-changing\"}]"
+    },
+    "third_request_notification": "The 1 reviews are identical to the audit-changing snapshot of 2026-11-14 02:47 UTC, so nothing changed since the analysis of 2026-11-14 02:47 UTC and no new snapshot was saved. Its recommendations still apply:\n\n1. [High] Noise: Noise complaints: mention it honestly in the listing and provide earplugs or better window sealing.",
+    "f4_runs_after_third_request": 2
+  }
+]

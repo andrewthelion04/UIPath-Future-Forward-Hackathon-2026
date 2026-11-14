@@ -1,0 +1,176 @@
+[
+  {
+    "case": "all_feature_switch_combinations",
+    "expected": "Every enabled/disabled feature combination preserves the common API and route contracts",
+    "passed": true,
+    "observations": {
+      "feature_combinations": 32,
+      "failures": []
+    },
+    "elapsed_s": 3.496
+  },
+  {
+    "case": "parallel_all_features",
+    "expected": "All concurrent flows and repeated decisions remain isolated and idempotent",
+    "passed": true,
+    "observations": {
+      "http_requests": 45,
+      "duplicate_decisions": 12,
+      "applied_decisions": 1,
+      "guest_events": 18,
+      "counts": {
+        "f1_seen_messages": 18,
+        "f2_incidents": 1,
+        "f4_insights": 4,
+        "f5_relist_proposals": 1
+      },
+      "handler_errors": []
+    },
+    "elapsed_s": 0.568
+  },
+  {
+    "case": "f1_event_failure_retry",
+    "expected": "A retried webhook recovers from one transient publication failure",
+    "passed": false,
+    "observations": {
+      "first": {
+        "status": "error",
+        "detail": "RuntimeError: injected transient event persistence failure"
+      },
+      "retry": {
+        "status": "duplicate",
+        "detail": ""
+      },
+      "replay": {
+        "provider": null,
+        "reprocessed": 0,
+        "remaining": 0,
+        "completed": true
+      },
+      "guest_events": 0
+    },
+    "elapsed_s": 0.096
+  },
+  {
+    "case": "f1_replay_record_failure",
+    "expected": "Reprocessing never creates duplicate conversation records for one external message",
+    "passed": false,
+    "observations": {
+      "first": {
+        "status": "unmapped",
+        "detail": "reservation is not mapped"
+      },
+      "replay1": {
+        "provider": null,
+        "reprocessed": 0,
+        "remaining": 1,
+        "completed": true
+      },
+      "replay2": {
+        "provider": null,
+        "reprocessed": 1,
+        "remaining": 0,
+        "completed": true
+      },
+      "inbound_records": 2,
+      "guest_events": 1
+    },
+    "elapsed_s": 0.11
+  },
+  {
+    "case": "approval_event_failure_retry",
+    "expected": "A decision retry recovers a transient failure before its event was published",
+    "passed": false,
+    "observations": {
+      "first_error": "injected transient decision event failure",
+      "stored_status": "approved",
+      "retry_applied": false,
+      "decision_events": 0,
+      "confirmations": 0
+    },
+    "elapsed_s": 0.127
+  },
+  {
+    "case": "foreign_provider_mapping",
+    "expected": "A webhook cannot silently use a booking and reply channel from another PMS connection",
+    "passed": false,
+    "observations": {
+      "mapping_http": 200,
+      "webhook": {
+        "status": "published",
+        "detail": ""
+      },
+      "incoming_provider": "hospitable",
+      "published_provider": "mock",
+      "hospitable_send_calls": 0,
+      "mock_reply_count": 1
+    },
+    "elapsed_s": 0.107
+  },
+  {
+    "case": "ownerrez_malformed_calendar",
+    "expected": "A malformed successful bookings response must not be presented as free nights",
+    "passed": false,
+    "observations": {
+      "returned_nights": 2,
+      "available": [
+        true,
+        true
+      ]
+    },
+    "elapsed_s": 0.083
+  },
+  {
+    "case": "reset_with_active_review_analysis",
+    "expected": "A successful reset cannot be repopulated by work from the previous world",
+    "passed": false,
+    "observations": {
+      "reset_http": 200,
+      "reset_wait_s": 10.06,
+      "snapshots_immediately_after_reset": 0,
+      "snapshots_after_old_task_finished": 1,
+      "old_sources": [
+        "audit-before-reset"
+      ],
+      "drained": true
+    },
+    "elapsed_s": 11.11
+  },
+  {
+    "case": "direct_container_shutdown",
+    "expected": "Container.shutdown drains replay tasks before closing SQLite",
+    "passed": false,
+    "observations": {
+      "scheduled_tasks": 1,
+      "errors_after_shutdown": [
+        "ProgrammingError: Cannot operate on a closed database."
+      ]
+    },
+    "elapsed_s": 0.061
+  },
+  {
+    "case": "public_api_without_auth",
+    "expected": "The declared general API authentication requirement is implemented",
+    "passed": false,
+    "observations": {
+      "properties_without_credentials": 200,
+      "decision_without_credentials": 200,
+      "declared_gap": "F4 plan step 5 explicitly not implemented; WEBHOOK_TOKEN protects webhooks only"
+    },
+    "elapsed_s": 0.111
+  },
+  {
+    "case": "free_text_guard_paraphrase",
+    "expected": "An unapproved pet exception must not be confirmed through an informational paraphrase",
+    "passed": false,
+    "observations": {
+      "pets_allowed": false,
+      "approval_count": 0,
+      "delivered": [
+        "Your dog can join you during the stay."
+      ],
+      "declared_limitation": "F3 explicitly documents the free-text filter as heuristic"
+    },
+    "elapsed_s": 0.234
+  }
+]
