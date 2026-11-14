@@ -1,8 +1,6 @@
-"""Politica deterministă a LLM-ului mock pentru agentul F3.
+"""Politică deterministă F3 pentru demo și teste fără cheie.
 
-Imită un model: se uită la mesajul oaspetelui și la rezultatele uneltelor de până acum și
-alege pasul următor. Așa demo-ul și testele rulează fără cheie API, iar timeline-ul arată
-un flux realist. Nu e logică de business: pe un model real, ordinea o alege modelul.
+Simulează alegerea uneltelor; validările rămân în unelte. Nu evaluează promptul real.
 """
 
 from __future__ import annotations
@@ -11,23 +9,20 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
-from app.core.agent.mock_support import (
-    call,
-    called_tools,
-    failed,
-    finish,
-    last_result,
-    objective_text,
-)
+from app.core.agent.mock_support import call, called_tools, failed, finish, last_result, objective_text
 from app.ports.llm import ChatMessage, ChatRequest
 
 ISSUE_WORDS = (
     "broken", "not working", "doesn't work", "does not work", "isn't working", "stopped working",
     "leak", "dirty", "no hot water", "smell", "mold", "cockroach", "out of order", "won't turn on",
     "defect", "nu merge", "stricat",
-)  # fmt: skip
+)
 EARLY_WORDS = ("early check", "check in early", "check-in early", "arrive early", "arrive earlier")
 LATE_WORDS = ("late check", "check out late", "check-out late", "leave later", "later check")
+NUMBER_WORDS = {word: number for number, word in enumerate(
+    ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+)}
+NUMBER = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
 
 
 def guest_text(request: ChatRequest) -> str:
@@ -36,6 +31,7 @@ def guest_text(request: ChatRequest) -> str:
 
 
 def classify(text: str) -> str:
+    """Intenția dominantă rămâne compatibilă; fluxul tratează separat intențiile mixte."""
     lowered = text.lower()
     if any(word in lowered for word in ISSUE_WORDS):
         return "issue"
@@ -46,32 +42,75 @@ def classify(text: str) -> str:
     return "info"
 
 
-def policy(request: ChatRequest) -> ChatMessage:
-    text = guest_text(request)
-    done = called_tools(request)
-
-    if "get_booking_context" not in done:
-        return call(
-            "get_booking_context",
-            reason="I need the booking, the property and the host rules before answering.",
-        )
-    context = last_result(request, "get_booking_context")
-    if failed(context) or not isinstance(context, dict):
-        return finish(
-            "Could not read the booking data, so no reply was sent. The host must answer.",
-            [str(context)],
-            reason="The data tool failed and I must not invent facts.",
-        )
-
-    intent = classify(text)
-    if intent == "issue":
-        return _issue_flow(request, text, context, done)
-    if intent in ("early_check_in", "late_check_out"):
-        return _exception_flow(request, intent, context, done)
-    return _info_flow(request, text, context, done)
+def _number(value: str) -> int:
+    return int(value) if value.isdigit() else NUMBER_WORDS[value]
 
 
-# --- Fluxuri ------------------------------------------------------------------------
+def _requested_time(text: str) -> str | None:
+    if "noon" in text:
+        return "12:00"
+    if "midnight" in text:
+        return "00:00"
+    match = re.search(r"\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b", text)
+    if match is None:
+        match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text)
+        if match is None:
+            return None
+        hour, minute, meridiem = int(match[1]), 0, match[2]
+    else:
+        hour, minute, meridiem = int(match[1]), int(match[2]), match[3]
+    if meridiem:
+        hour = hour % 12 + (12 if meridiem == "pm" else 0)
+    return f"{hour:02d}:{minute:02d}" if 0 <= hour < 24 and minute < 60 else None
+
+
+def _is_pet_question(text: str) -> bool:
+    return bool(re.search(r"\b(pets?|dogs?|cats?)\b", text))
+
+
+def _is_pet_policy_question(text: str) -> bool:
+    return ("pet policy" in text or "pets allowed" in text or bool(re.search(
+        r"\b(?:are|is)\b.*\b(?:pets?|dogs?|cats?)\b.*\b(?:allowed|welcome)\b", text
+    ))) and not any(word in text for word in ("bring", "our dog", "our cat", "exception"))
+
+
+def _request_candidates(text: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extrage parametrii; uneltele decid dacă respectă limitele și aprobările existente."""
+    lowered = text.lower()
+    booking, rules = context["booking"], context["host_rules"]
+    requested_time = _requested_time(lowered)
+    explicit_day = re.search(r"\b\d{4}-\d{2}-\d{2}\b", lowered)
+    candidates = []
+    early = any(word in lowered for word in EARLY_WORDS)
+    late = any(word in lowered for word in LATE_WORDS)
+    if requested_time and re.search(r"check[ -]?in|arriv", lowered):
+        early = early or requested_time < rules["check_in_time"]
+    if requested_time and re.search(r"check[ -]?out|leav", lowered):
+        late = late or requested_time > rules["check_out_time"]
+    for is_requested, kind, day_key, limit_key in (
+        (early, "early_check_in", "check_in", "early_check_in_earliest"),
+        (late, "late_check_out", "check_out", "late_check_out_latest"),
+    ):
+        if is_requested:
+            candidates.append({
+                "request_type": kind,
+                "requested_date": explicit_day[0] if explicit_day else booking[day_key],
+                "requested_time": requested_time or rules.get(limit_key),
+            })
+    if _is_pet_question(lowered) and not _is_pet_policy_question(lowered) and not rules["pets_allowed"]:
+        count = re.search(rf"\b({NUMBER})\s+(?:pets?|dogs?|cats?)\b", lowered)
+        candidates.append({"request_type": "pets", "pet_count": _number(count[1]) if count else 1})
+    extra = re.search(rf"\b({NUMBER})\s+(?:extra|additional|more)\s+(?:guests?|people|persons?|friends?)\b", lowered)
+    total = re.search(rf"\b({NUMBER})\s+(?:guests?|people|persons?)\b", lowered)
+    if total is None:
+        total = re.search(rf"\bwe(?:'ll| will)?\s+(?:be|are)\s+({NUMBER})\b", lowered)
+    guest_count = (
+        booking["guest_count"] + _number(extra[1]) if extra
+        else _number(total[1]) if total else None
+    )
+    if guest_count is not None and guest_count > booking["guest_count"]:
+        candidates.append({"request_type": "extra_guests", "guest_count": guest_count})
+    return candidates
 
 
 def _first_name(context: dict[str, Any]) -> str:
@@ -79,154 +118,184 @@ def _first_name(context: dict[str, Any]) -> str:
 
 
 def _reply_or_finish(
-    request: ChatRequest, done: list[str], text: str, reason: str, result: str, evidence: list[str]
+    request: ChatRequest, done: list[str], text: str, evidence: list[str],
+    *, host_follow_up: bool = False, approval: dict[str, Any] | None = None, prior_replies: int = 0,
 ) -> ChatMessage:
-    if "send_guest_reply" not in done:
-        return call("send_guest_reply", text=text, reason=reason)
+    if prior_replies and failed(last_result(request, "send_guest_reply")):
+        return finish("The first reply could not be delivered; the host must follow up.", evidence,
+                      reason="An earlier send failed and must not be reported as successful.")
+    if done.count("send_guest_reply") <= prior_replies:
+        args: dict[str, Any] = {
+            "text": text,
+            "reason": "The reply uses verified facts or states what the host still needs to decide.",
+        }
+        if host_follow_up:
+            args["host_follow_up"] = True
+        if approval:
+            args.update(approval_id=approval["approval_id"], request=approval["request"])
+        return call("send_guest_reply", **args)
     sent = last_result(request, "send_guest_reply")
     if failed(sent):
         return finish(
-            f"The reply could not be delivered: {sent['error']}",
-            evidence,
+            f"The reply could not be delivered: {sent['error']}", evidence,
             reason="Sending failed; the host has to follow up.",
         )
-    return finish(result, evidence, reason="The guest has an answer and nothing else is pending.")
+    return finish("Answered from verified facts and the recorded request status.", evidence,
+                  reason="The guest has an answer and required actions have been attempted.")
 
 
-def _info_flow(request: ChatRequest, text: str, context: dict, done: list[str]) -> ChatMessage:
-    booking, prop, rules = context["booking"], context["property"] or {}, context["host_rules"]
+def _fact_parts(text: str, context: dict[str, Any], *, include_standard: bool) -> tuple[list[str], list[str], bool]:
+    booking, prop, rules = context["booking"], context.get("property") or {}, context["host_rules"]
     lowered = text.lower()
     amenities = prop.get("amenities", [])
-    parts = [f"Hi {_first_name(context)}, thanks for your message!"]
+    notes = rules.get("house_notes", [])
+    parts: list[str] = []
     evidence: list[str] = []
-
-    if any(word in lowered for word in ("wifi", "wi-fi", "internet")):
-        has_wifi = "wifi" in amenities
-        parts.append(
-            "Yes, the apartment has Wi-Fi; the network name and password are in the welcome guide."
-            if has_wifi
-            else "Unfortunately this property does not have Wi-Fi."
-        )
-        evidence.append(f"amenities include wifi: {has_wifi}")
+    follow_up = False
+    if any(word in lowered for word in ("wifi", "wi-fi", "internet", "password")):
+        if "wifi" in amenities:
+            parts.append("The property has Wi-Fi.")
+            evidence.append("wifi is listed in the property amenities")
+        else:
+            parts.append("I do not have verified Wi-Fi information for this property; the host will follow up.")
+            follow_up = True
+        if any(word in lowered for word in ("password", "network")):
+            verified = [note for note in notes if re.search(r"wi[ -]?fi|network|password", note, re.I)]
+            parts.extend(verified)
+            if not verified:
+                parts.append("I do not have a verified network name or password to share; the host will follow up.")
+                follow_up = True
     if "park" in lowered:
-        has_parking = "parking" in amenities
-        parts.append(
-            "Yes, a parking spot is included."
-            if has_parking
-            else "There is no private parking, but public parking is available nearby."
-        )
-        evidence.append(f"amenities include parking: {has_parking}")
-    if any(word in lowered for word in ("pet", "dog", "cat ")):
-        parts.append(
-            "Pets are welcome." if rules["pets_allowed"] else "Unfortunately pets are not allowed."
-        )
-        evidence.append(f"host rule pets_allowed: {rules['pets_allowed']}")
-    if len(parts) == 1 or any(
-        word in lowered for word in ("check", "arriv", "address", "where", "time", "leave")
-    ):
-        parts.append(
-            f"Check-in at {prop.get('name')} ({prop.get('address')}) is from "
-            f"{rules['check_in_time']} on {booking['check_in']}, and check-out is by "
-            f"{rules['check_out_time']} on {booking['check_out']}."
-        )
-        evidence.append(
-            f"check-in {rules['check_in_time']} on {booking['check_in']}, "
-            f"check-out {rules['check_out_time']} on {booking['check_out']}"
-        )
-    parts.append("Let us know if you need anything else.")
+        parts.append("Parking is listed among the property's amenities." if "parking" in amenities
+                     else "I do not have verified parking information for this property.")
+        verified = [note for note in notes if "park" in note.lower()]
+        parts.extend(verified)
+        if not verified:
+            parts.append("I do not have verified parking availability, allocation or cost details; the host will follow up.")
+            follow_up = True
+        evidence.append(f"parking listed in amenities: {'parking' in amenities}")
+    if _is_pet_question(lowered) and (rules["pets_allowed"] or _is_pet_policy_question(lowered)):
+        parts.append("The host rules permit pets." if rules["pets_allowed"]
+                     else "Pets are not allowed under the standard house rules. An exception requires the host's decision.")
+        evidence.append(f"pets_allowed: {rules['pets_allowed']}")
+    if any(word in lowered for word in ("access", "door", "key", "lockbox", "code", "entry", "get in")):
+        verified = [note for note in notes if re.search(r"access|door|key|lockbox|code|entry", note, re.I)]
+        parts.extend(verified)
+        if not verified:
+            parts.append("I do not have verified access instructions; the host will follow up.")
+            follow_up = True
+        evidence.extend(verified)
+    standard_question = re.search(r"check[ -]?in|check[ -]?out|arrival|arriv(?:e|ing)|departure|departing|address|leave", lowered)
+    if include_standard and standard_question:
+        if prop.get("name") and prop.get("address"):
+            parts.append(
+                f"Check-in at {prop['name']} ({prop['address']}) is from "
+                f"{rules['check_in_time']} on {booking['check_in']}, and check-out is by "
+                f"{rules['check_out_time']} on {booking['check_out']}."
+            )
+            evidence.append(f"standard check-in {rules['check_in_time']}; check-out {rules['check_out_time']}")
+        else:
+            parts.append("I do not have complete property details; the host will follow up.")
+            follow_up = True
+    if re.search(r"extra guests?|additional guests?|more (?:people|guests?)", lowered) and not _request_candidates(text, context):
+        parts.append("How many people would stay in total? I need that number before asking the host.")
+    if re.search(r"discount|refund|reimburs|compensation|upgrade|waiv|complimentary|free stay", lowered):
+        parts.append("I do not have verified details for that request; the host will follow up.")
+        evidence.append("the requested exception is not supported by the available facts and typed request tools")
+        follow_up = True
+    if include_standard and not parts:
+        parts.append("I do not have verified information to answer that question; the host will follow up.")
+        evidence.append("the available booking context does not answer this question")
+        follow_up = True
+    return parts, evidence, follow_up
 
-    return _reply_or_finish(
-        request,
-        done,
-        " ".join(parts),
-        "I have the facts from the booking context and no exception is requested.",
-        "Answered the guest's question with facts from the booking, property and host rules.",
-        evidence,
-    )
+
+def policy(request: ChatRequest) -> ChatMessage:
+    text = guest_text(request)
+    done = called_tools(request)
+    if "get_booking_context" not in done:
+        return call("get_booking_context", reason="I need the booking, property, rules and existing requests before answering.")
+    context = last_result(request, "get_booking_context")
+    if failed(context) or not isinstance(context, dict):
+        return finish("Could not read the booking data; the host must answer.", [str(context)],
+                      reason="The data tool failed and I must not invent facts.")
+    issue = any(word in text.lower() for word in ISSUE_WORDS)
+    if issue and "report_issue" not in done:
+        return call("report_issue", description=text, severity="medium",
+                    reason="The guest reports a property problem; the incident flow must handle it.")
+    candidates = _request_candidates(text, context)
+    if candidates:
+        return _exception_flow(request, text, context, done, candidates, issue)
+    parts, evidence, follow_up = _fact_parts(text, context, include_standard=not issue)
+    if issue:
+        reported = last_result(request, "report_issue")
+        parts.insert(0, "I have informed the host and the team about the problem." if not failed(reported)
+                     else "I could not forward the problem automatically; the host will follow up.")
+        follow_up = follow_up or failed(reported)
+        evidence.append(f"issue forwarded: {not failed(reported)}")
+    return _reply_or_finish(request, done, f"Hi {_first_name(context)}, " + " ".join(parts),
+                            evidence or ["used the available booking context"], host_follow_up=follow_up)
 
 
-def _exception_flow(request: ChatRequest, intent: str, context: dict, done: list[str]) -> ChatMessage:
+def _exception_flow(
+    request: ChatRequest, text: str, context: dict[str, Any], done: list[str],
+    candidates: list[dict[str, Any]], issue: bool,
+) -> ChatMessage:
+    candidate = candidates[0]
+    kind = candidate["request_type"]
     booking, rules = context["booking"], context["host_rules"]
-    first = _first_name(context)
-    early = intent == "early_check_in"
-    check_in, check_out = date.fromisoformat(booking["check_in"]), date.fromisoformat(booking["check_out"])
-    # Early check-in depinde de noaptea dinainte; late check-out de noaptea plecării.
-    night = check_in - timedelta(days=1) if early else check_out
-
-    if "check_calendar" not in done:
-        return call(
-            "check_calendar",
-            start_date=night.isoformat(),
-            end_date=(night + timedelta(days=1)).isoformat(),
-            reason=(
-                "An early check-in is only realistic if nobody stays the night before."
-                if early
-                else "A late check-out is only realistic if nobody arrives that day."
-            ),
-        )
-    days = last_result(request, "check_calendar")
-    if isinstance(days, list) and days:
-        night_state = "free" if all(day.get("available") for day in days) else "booked"
+    evidence = [f"request type: {kind}"]
+    if kind in ("early_check_in", "late_check_out"):
+        early = kind == "early_check_in"
+        night = date.fromisoformat(booking["check_in"]) - timedelta(days=1) if early else date.fromisoformat(booking["check_out"])
+        if "check_calendar" not in done:
+            return call("check_calendar", start_date=night.isoformat(), end_date=(night + timedelta(days=1)).isoformat(),
+                        reason="The neighboring night informs the host's decision without guaranteeing availability.")
+        days = last_result(request, "check_calendar")
+        complete = (isinstance(days, list) and len(days) == 1 and days[0].get("day") == night.isoformat())
+        night_state = ("free" if days[0].get("available") else "booked") if complete else "unknown (calendar unavailable)"
+        summary = f"{booking['guest_name']} requests {kind.replace('_', ' ')}. The night of {night.isoformat()} is {night_state}."
+        evidence.append(f"night of {night.isoformat()} is {night_state}")
     else:
-        night_state = "unknown (calendar unavailable)"
-
-    label = "an early check-in" if early else "a late check-out"
-    standard = rules["check_in_time"] if early else rules["check_out_time"]
-    limit = rules["early_check_in_earliest"] if early else rules["late_check_out_latest"]
-    day = booking["check_in"] if early else booking["check_out"]
-    evidence = [
-        f"standard time {standard}, limit allowed by host rules {limit}",
-        f"night of {night.isoformat()} is {night_state}",
-    ]
-
+        summary = f"{booking['guest_name']} requests {kind.replace('_', ' ')} with parameters {candidate}."
     if "request_host_approval" not in done:
-        return call(
-            "request_host_approval",
-            request_summary=(
-                f"{booking['guest_name']} asks for {label} on {day}. The standard time is "
-                f"{standard}; your rules allow at most {limit}. The night of "
-                f"{night.isoformat()} is {night_state}."
-            ),
-            proposed_reply=(
-                f"Good news, {first}! The host confirmed {label}: "
-                f"{'from' if early else 'until'} {limit} on {day}."
-            ),
-            reason="This is an exception to the host rules, so the host must decide.",
-        )
-    asked = last_result(request, "request_host_approval")
-    holding = (
-        f"Hi {first}, thanks for asking! The standard time is {standard}. "
-        + (
-            f"I have passed your request for {label} to the host and will confirm as soon as I hear back."
-            if not failed(asked)
-            else "The host will get back to you about your request shortly."
-        )
-    )
-    return _reply_or_finish(
-        request,
-        done,
-        holding,
-        "The guest should know the request is with the host; I must not promise the outcome.",
-        f"Asked the host to decide on {label} and told the guest the host will confirm.",
-        evidence,
-    )
-
-
-def _issue_flow(request: ChatRequest, text: str, context: dict, done: list[str]) -> ChatMessage:
-    if "report_issue" not in done:
-        return call(
-            "report_issue",
-            description=text,
-            severity="medium",
-            reason="The guest reports a problem in the property; the incident flow must handle it.",
-        )
-    reported = last_result(request, "report_issue")
-    return _reply_or_finish(
-        request,
-        done,
-        f"Hi {_first_name(context)}, thank you for letting us know, and sorry about the trouble. "
-        "I have informed the host and the team, and we will get back to you shortly with a solution.",
-        "The guest should know the problem is being handled.",
-        "Forwarded the reported problem to the incident flow and acknowledged it to the guest.",
-        [f"issue forwarded: {not failed(reported)}"],
-    )
+        return call("request_host_approval", request=candidate, request_summary=summary,
+                    reason="The host must decide on this exact exception after the tool validates its limits.")
+    approval = last_result(request, "request_host_approval")
+    facts, fact_evidence, follow_up = _fact_parts(text, context, include_standard=False)
+    evidence.extend(fact_evidence)
+    if issue:
+        reported = last_result(request, "report_issue")
+        facts.insert(0, "I have informed the host and the team about the problem." if not failed(reported)
+                     else "I could not forward the problem automatically; the host will follow up.")
+        follow_up = follow_up or failed(reported)
+        evidence.append(f"issue forwarded: {not failed(reported)}")
+    if len(candidates) > 1:
+        facts.append("Your other request also needs the host's attention; the host will follow up.")
+        follow_up = True
+    if failed(approval) or not isinstance(approval, dict):
+        error = str((approval or {}).get("error", "request could not be submitted"))
+        holding = "I could not submit this request automatically. The host will follow up."
+        follow_up = True
+        evidence.append(error)
+    elif approval.get("status") == "approved":
+        # Numai textul canonic întors de unealtă, cu aceeași cerere și aprobare.
+        # Un al doilea răspuns păstrează confirmarea exactă fără să ascundă alte intenții.
+        if facts and "send_guest_reply" not in done:
+            return _reply_or_finish(request, done, f"Hi {_first_name(context)}, " + " ".join(facts),
+                                    evidence, host_follow_up=follow_up)
+        return _reply_or_finish(request, done, approval["proposed_reply"], evidence,
+                                approval=approval, prior_replies=1 if facts else 0)
+    elif approval.get("status") == "rejected":
+        holding = "The host previously declined this request, so I cannot accommodate it."
+        evidence.append("the same request was previously rejected")
+    else:
+        label = {"early_check_in": "an early check-in", "late_check_out": "a late check-out",
+                 "pets": "bringing your pet", "extra_guests": "additional guests"}[kind]
+        holding = (f"Your request for {label} is already with the host; I will let you know when the host decides."
+                   if approval.get("reused") else
+                   f"I have passed your request for {label} to the host and will confirm as soon as I hear back.")
+        if kind in ("early_check_in", "late_check_out"):
+            holding = f"The standard time is {rules['check_in_time' if kind == 'early_check_in' else 'check_out_time']}. " + holding
+    return _reply_or_finish(request, done, f"Hi {_first_name(context)}, " + " ".join([*facts, holding]),
+                            evidence, host_follow_up=follow_up)

@@ -1,81 +1,391 @@
-"""F2 — Incidente: sesizare -> incident -> aprobare (remediere / relocare) -> acțiune."""
+"""F2 — Incidente.
+
+Fluxul: sesizare -> triere (atașez sau deschid) -> agentul întreabă mentenanța cât durează ->
+estimare -> propunere către host (relocare sau remediere, cu mesajele exacte pentru oaspete) ->
+decizia hostului -> oferta de relocare și răspunsul oaspetelui -> sarcina de reparație ->
+personalul termină -> aprobarea închiderii -> `resolved`.
+
+Reguli de execuție (vezi CLAUDE.md-ul feature-ului):
+- un singur agent per handler; pașii asincroni trec prin evenimente interne;
+- orice muncă se face într-un handler, ca aprobările și mesajele să moștenească corelarea
+  incidentului; un pas pornit din afară (endpoint, termen expirat) doar publică un eveniment
+  cu `correlation_id`-ul incidentului;
+- nimic nu pleacă spre oaspete în afara unei aprobări, iar ce pleacă e textul aprobat.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import date, datetime
-from typing import Any, Literal
-
-from pydantic import BaseModel
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from typing import Any
 
 from app.core.channel_gateway import ChannelError
 from app.core.clock import utcnow
-from app.core.contracts.events import ApprovalDecided, IssueReported
-from app.core.contracts.models import ApprovalOption, Booking, Property
+from app.core.contracts.events import ApprovalDecided, Event, IssueReported
+from app.core.contracts.models import ApprovalOption, Booking, BookingStatus, Property, StaffMember
 from app.core.feature_context import FeatureContext
-from app.core.ids import new_id
-from app.features.f2_incidents.events import IncidentResolved
+from app.features.f2_incidents import templates
+from app.features.f2_incidents.agents import IncidentAgents
+from app.features.f2_incidents.events import (
+    EstimateReady,
+    GuestAnsweredRelocation,
+    IncidentDecided,
+    IncidentResolved,
+    IncidentTaskCompleted,
+    IncidentTimeout,
+    SimGuestAnswerDue,
+    SimStaffReplyDue,
+    SimTaskDue,
+    StaffContactRequested,
+    StaffReplied,
+)
+from app.features.f2_incidents.models import (
+    OPTION_RELOCATE,
+    OPTION_REMEDIATE,
+    GuestDrafts,
+    Incident,
+    IncidentView,
+    StaffMessage,
+    StaffTask,
+)
+from app.features.f2_incidents.repo import IncidentRepository
+from app.features.f2_incidents.rules import (
+    explain_recommendation,
+    fix_in_time,
+    format_hours,
+    friendly_hours,
+    higher_severity,
+    hours_until_check_in,
+    is_compatible,
+    parse_triage_result,
+    problem_phrase,
+    recommend,
+    valid_guest_message,
+)
+from app.features.f2_incidents.settings import F2Settings
+from app.features.f2_incidents.simulation import scripted_staff_reply, scripted_task_note
 
 logger = logging.getLogger("staypilot.f2")
 
 APPROVAL_KIND = "incident_resolution"
-OPTION_REMEDIATE = "remediate"
-OPTION_RELOCATE = "relocate"
+CLOSURE_KIND = "incident_closure"
+OPTION_CLOSE = "close"
 
-IncidentStatus = Literal["awaiting_decision", "remediation_scheduled", "relocated", "dismissed"]
+__all__ = [  # păstrate pentru cine importa din `service` înainte de împărțirea în module
+    "APPROVAL_KIND",
+    "CLOSURE_KIND",
+    "OPTION_RELOCATE",
+    "OPTION_REMEDIATE",
+    "Incident",
+    "IncidentService",
+    "is_compatible",
+]
 
 
-class Incident(BaseModel):
-    id: str
-    property_id: str
-    booking_id: str | None = None
+# --- Ceasul (înlocuibil în teste) -------------------------------------------------------
+
+
+def utc_now() -> datetime:
+    return utcnow()
+
+
+def local_time_of_day() -> time:
+    """Ora locală curentă; data vine din `ctx.clock.today()` (poate fi înghețată)."""
+    return datetime.now().time()
+
+
+# --- Faptele propunerii -------------------------------------------------------------------
+
+
+@dataclass
+class ProposalFacts:
+    """Tot ce trebuie pentru propunere: calculat în cod, citit de agentul `proposal`."""
+
+    property_name: str
     description: str
-    reported_via: str
-    reporter: str = ""
-    severity: str = "medium"
-    status: IncidentStatus
-    relocation_property_id: str | None = None
-    approval_id: str | None = None
-    resolution: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    booking: Booking | None
+    has_booking: bool
+    in_house: bool
+    hours_until: float | None
+    eta_hours: float | None
+    eta_source: str
+    eta_quote: str | None
+    contact_name: str | None
+    candidate: Property | None
+    in_time: bool
+    recommendation: str
+    reason: str
 
+    def needed_messages(self) -> set[str]:
+        needed: set[str] = set()
+        if not self.has_booking:
+            return needed
+        if self.candidate is not None:
+            needed |= {"relocation_offer", "relocation_accepted", "relocation_declined"}
+        if self.in_house or not self.in_time:
+            needed.add("fix_apology")  # dacă reparația se termină înainte de sosire: fără mesaj
+        return needed
 
-def is_compatible(candidate: Property, original: Property, guest_count: int) -> bool:
-    """Regula de compatibilitate pentru relocare: același oraș, loc pentru toți, cel puțin la fel de mare."""
-    return (
-        candidate.id != original.id
-        and candidate.city.strip().lower() == original.city.strip().lower()
-        and candidate.max_guests >= guest_count
-        and candidate.bedrooms >= original.bedrooms
-    )
+    def as_context(self) -> dict[str, Any]:
+        booking = self.booking
+        return {
+            "guest_first_name": templates.first_name(booking.guest_name) if booking else None,
+            "property": self.property_name,
+            "problem": problem_phrase(self.description),
+            "guest_status": (
+                "in the property now" if self.in_house
+                else f"arrives in {format_hours(self.hours_until)}" if self.has_booking
+                else "no guest affected"
+            ),
+            "fix_estimate": (
+                friendly_hours(self.eta_hours) if self.eta_hours
+                else "unknown: say it will be fixed as soon as possible"
+            ),
+            "relocation_target": (
+                {"name": self.candidate.name, "address": self.candidate.address,
+                 "sleeps": self.candidate.max_guests, "bedrooms": self.candidate.bedrooms}
+                if self.candidate else None
+            ),
+            "messages_needed": sorted(self.needed_messages()),
+            "rules": [
+                "relocation is at no extra cost for the guest",
+                "do not promise compensation, refunds or exact times beyond the fix estimate",
+                "sign as the host's team; no placeholders",
+            ],
+        }  # fmt: skip
 
 
 class IncidentService:
-    def __init__(self, ctx: FeatureContext) -> None:
+    def __init__(self, ctx: FeatureContext, settings: F2Settings) -> None:
         self._ctx = ctx
+        self.settings = settings
+        self.repo = IncidentRepository(ctx.db)
+        self.agents = IncidentAgents(ctx, self.repo)
+        self._property_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._incident_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._background: set[asyncio.Task[None]] = set()
 
-    # --- Citire --------------------------------------------------------------------
+    # --- Citire ---------------------------------------------------------------------------
 
-    def list(self) -> list[Incident]:
-        rows = self._ctx.db.query("SELECT * FROM f2_incidents ORDER BY created_at DESC, rowid DESC")
-        return [Incident(**row) for row in rows]
+    def list(self) -> list[IncidentView]:
+        return [self.repo.view(incident) for incident in self.repo.list()]
 
     def get(self, incident_id: str) -> Incident | None:
-        row = self._ctx.db.query_one("SELECT * FROM f2_incidents WHERE id = ?", (incident_id,))
-        return Incident(**row) if row else None
+        return self.repo.get(incident_id)
 
-    def _update(self, incident_id: str, **fields: Any) -> None:
-        fields["updated_at"] = utcnow().isoformat()
-        assignments = ", ".join(f"{name} = ?" for name in fields)
-        self._ctx.db.execute(
-            f"UPDATE f2_incidents SET {assignments} WHERE id = ?", (*fields.values(), incident_id)
+    def view(self, incident_id: str) -> IncidentView | None:
+        incident = self.repo.get(incident_id)
+        return self.repo.view(incident) if incident else None
+
+    # --- Ajutoare -------------------------------------------------------------------------
+
+    def _now_local(self) -> datetime:
+        return datetime.combine(self._ctx.clock.today(), local_time_of_day())
+
+    async def _emit(self, event_cls: type[Event], incident: Incident, **fields: Any) -> None:
+        """Publică un eveniment intern pe corelarea incidentului (și din afara unui handler)."""
+        await self._ctx.bus.publish(
+            event_cls(
+                incident_id=incident.id,
+                correlation_id=incident.correlation_id,
+                source=f"feature:{self._ctx.feature}",
+                **fields,
+            )
         )
 
-    # --- Sesizare -> incident -> cerere de aprobare --------------------------------
+    async def _later(self, delay_s: float, event: Event) -> None:
+        """Publică acum (întârziere 0: `?wait=true` îl așteaptă) sau după o pauză, în fundal."""
+        if delay_s <= 0:
+            await self._ctx.bus.publish(event)
+            return
+
+        async def publish_later() -> None:
+            try:
+                await asyncio.sleep(delay_s)
+                await self._ctx.bus.publish(event)
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # fundalul nu are cine să prindă eroarea: o logăm
+                logger.exception("Delayed F2 step %s failed", event.event_type())
+
+        # Contextul (inclusiv evenimentul în curs) se copiază la creare: corelarea se păstrează.
+        task = asyncio.get_running_loop().create_task(publish_later())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    def _event(self, event_cls: type[Event], incident: Incident, **fields: Any) -> Event:
+        return event_cls(
+            incident_id=incident.id,
+            correlation_id=incident.correlation_id,
+            source=f"feature:{self._ctx.feature}",
+            **fields,
+        )
+
+    def _property_name(self, property_id: str) -> str:
+        prop = self._ctx.world.get_property(property_id)
+        return prop.name if prop else property_id
+
+    def _contact(self, property_id: str) -> StaffMember | None:
+        """Persoana de contact: întâi mentenanța alocată proprietății, apoi oricine alocat."""
+        staff = [m for m in self._ctx.world.list_staff() if property_id in m.property_ids]
+        return next((m for m in staff if m.role == "maintenance"), staff[0] if staff else None)
+
+    def _live_booking(self, incident: Incident) -> Booking | None:
+        """Rezervarea afectată, dacă e confirmată și sejurul nu s-a terminat."""
+        if not incident.booking_id:
+            return None
+        booking = self._ctx.world.get_booking(incident.booking_id)
+        if booking is None or booking.status != BookingStatus.CONFIRMED:
+            return None
+        return booking if booking.check_out > self._ctx.clock.today() else None
+
+    async def _message_guest(self, booking_id: str, text: str | None) -> bool:
+        if not text:
+            return False
+        try:
+            await self._ctx.channel.send_to_guest(
+                booking_id, text, sender="host", feature=self._ctx.feature
+            )
+            return True
+        except ChannelError:
+            return False  # ChannelGateway a notificat deja hostul; restul acțiunii continuă
+
+    def _stay_context(self, incident: Incident) -> str:
+        booking = self._live_booking(incident)
+        if booking is None:
+            return "No guest is affected right now."
+        hours = hours_until_check_in(
+            booking.check_in, self._ctx.world.host_rules().check_in_time, self._now_local()
+        )
+        if hours <= 0:
+            return "A guest is staying there right now."
+        return f"The next guest checks in in {format_hours(hours)}."
+
+    # --- Canalul cu personalul (o singură funcție, înlocuibilă de un canal real) -------------
+
+    async def send_to_staff(self, incident: Incident, text: str) -> StaffMessage:
+        """Întrebare către mentenanță: pornește termenul și, în simulare, răspunsul automat."""
+        message = self.repo.add_staff_message(
+            incident.id,
+            direction="to_staff",
+            body=text,
+            staff_id=incident.contact_staff_id,
+            staff_name=incident.contact_staff_name or "",
+        )
+        deadline = utc_now() + timedelta(minutes=self.settings.staff_reply_timeout_min)
+        incident = self.repo.update(
+            incident.id, staff_questions=incident.staff_questions + 1, staff_deadline=deadline
+        )
+        if self.settings.sim_enabled:
+            await self._later(self.settings.sim_staff_delay_s, self._event(SimStaffReplyDue, incident))
+        return message
+
+    def _note_to_staff(self, incident: Incident, staff_id: str | None, name: str | None, text: str) -> None:
+        """Mesaj informativ către personal (fără întrebare, fără termen)."""
+        if staff_id:
+            self.repo.add_staff_message(
+                incident.id, direction="to_staff", body=text, staff_id=staff_id, staff_name=name or ""
+            )
+
+    # --- Intrări independente de canal (endpointuri, simulare, un viitor WhatsApp) ---------
+
+    async def report_issue(
+        self,
+        *,
+        property_id: str,
+        description: str,
+        staff_id: str | None,
+        booking_id: str | None,
+        severity: str,
+    ) -> Event:
+        """Sesizare de la personal: același eveniment ca din simulator sau de la F3."""
+        world = self._ctx.world
+        if world.get_property(property_id) is None:
+            raise LookupError(f"unknown property {property_id}")
+        if booking_id and world.get_booking(booking_id) is None:
+            raise LookupError(f"unknown booking {booking_id}")
+        staff = {m.id: m for m in world.list_staff()}
+        if staff_id and staff_id not in staff:
+            raise LookupError(f"unknown staff member {staff_id}")
+        return await self._ctx.bus.publish(
+            IssueReported(
+                property_id=property_id,
+                booking_id=booking_id,
+                description=description,
+                reported_via="staff",
+                reporter=staff[staff_id].name if staff_id else "Staff",
+                severity=severity,  # type: ignore[arg-type]
+                source=f"feature:{self._ctx.feature}",
+            )
+        )
+
+    async def receive_staff_reply(
+        self, incident_id: str, text: str, *, staff_id: str | None = None, simulated: bool = False
+    ) -> StaffMessage:
+        incident = self.repo.get(incident_id)
+        if incident is None:
+            raise LookupError(f"unknown incident {incident_id}")
+        if not incident.is_open:
+            raise ValueError(f"incident {incident_id} is {incident.status}")
+        name = incident.contact_staff_name or ""
+        if staff_id and staff_id != incident.contact_staff_id:
+            member = next((m for m in self._ctx.world.list_staff() if m.id == staff_id), None)
+            name = member.name if member else staff_id
+        message = self.repo.add_staff_message(
+            incident.id,
+            direction="from_staff",
+            body=text,
+            staff_id=staff_id or incident.contact_staff_id,
+            staff_name=name,
+            simulated=simulated,
+        )
+        await self._emit(StaffReplied, incident, message_id=message.id)
+        return message
+
+    async def answer_relocation(self, incident_id: str, choice: str, *, simulated: bool = False) -> None:
+        incident = self.repo.get(incident_id)
+        if incident is None:
+            raise LookupError(f"unknown incident {incident_id}")
+        if incident.status != "awaiting_guest":
+            raise ValueError(f"incident {incident_id} is not waiting for the guest ({incident.status})")
+        await self._emit(GuestAnsweredRelocation, incident, choice=choice, simulated=simulated)
+
+    async def complete_task(
+        self, task_id: str, *, note: str | None, completed_by: str | None = None
+    ) -> StaffTask:
+        task = self.repo.task(task_id)
+        if task is None:
+            raise LookupError(f"unknown task {task_id}")
+        incident = self.repo.get(task.incident_id)
+        if self.repo.complete_task(task_id, note=note, completed_by=completed_by or task.staff_name or "staff"):
+            if incident is not None:
+                await self._emit(IncidentTaskCompleted, incident, task_id=task_id)
+        return self.repo.task(task_id)  # type: ignore[return-value]
+
+    # --- Termene ---------------------------------------------------------------------------
+
+    async def check_deadlines(self) -> int:
+        """Publică un timeout pentru fiecare termen depășit. Termenele stau în baza de date."""
+        now, fired = utc_now(), 0
+        for column, status, kind in (
+            ("staff_deadline", "awaiting_staff", "staff"),
+            ("guest_deadline", "awaiting_guest", "guest"),
+        ):
+            for incident in self.repo.with_deadline_before(column, status, now):
+                self.repo.update(incident.id, **{column: None})  # o singură dată
+                await self._emit(IncidentTimeout, incident, kind=kind)
+                fired += 1
+        return fired
+
+    # === Handleri ============================================================================
 
     async def on_issue_reported(self, event: IssueReported) -> None:
+        """Sesizare -> triere -> incident nou (sau raport atașat). Singurul abonat F2 la eveniment."""
         ctx = self._ctx
+        await self.check_deadlines()
         prop = ctx.world.get_property(event.property_id)
         if prop is None:
             ctx.notify(
@@ -84,120 +394,480 @@ class IncidentService:
                 level="warning",
             )
             return
-
         today = ctx.clock.today()
         booking = (
             ctx.world.get_booking(event.booking_id)
             if event.booking_id
             else ctx.world.active_booking_for_property(prop.id, today)
         )
-        candidate = await self._find_relocation(booking, prop, today) if booking else None
 
-        incident_id = new_id("inc")
-        now = utcnow().isoformat()
-        ctx.db.execute(
-            "INSERT INTO f2_incidents (id, property_id, booking_id, description, reported_via, "
-            "reporter, severity, status, relocation_property_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_decision', ?, ?, ?)",
-            (
-                incident_id,
-                prop.id,
-                booking.id if booking else None,
-                event.description,
-                event.reported_via,
-                event.reporter,
-                event.severity,
-                candidate.id if candidate else None,
-                now,
-                now,
-            ),
+        async with self._property_locks[prop.id]:
+            target = await self._triage(event, prop)
+            if target is not None:
+                self._attach(target, event, prop)
+                return
+            incident = self.repo.create(
+                property_id=prop.id,
+                booking_id=booking.id if booking else None,
+                description=event.description,
+                reported_via=event.reported_via,
+                reporter=event.reporter,
+                severity=event.severity,
+                correlation_id=event.correlation_id,
+            )
+            self.repo.add_report(
+                incident.id,
+                description=event.description,
+                reported_via=event.reported_via,
+                reporter=event.reporter,
+                severity=event.severity,
+                booking_id=event.booking_id,
+            )
+        await self._emit(StaffContactRequested, incident)
+
+    async def _triage(self, event: IssueReported, prop: Property) -> Incident | None:
+        open_incidents = self.repo.open_for_property(prop.id)
+        if not open_incidents:
+            return None  # nimic de comparat: incident nou, fără LLM
+        outcome = await self.agents.triage(
+            property_id=prop.id,
+            property_name=prop.name,
+            description=event.description,
+            reporter=event.reporter,
+        )
+        if outcome.result.status != "finished":
+            self._ctx.notify(
+                f"Possible duplicate incident at {prop.name}",
+                "The duplicate check could not run, so a new incident was opened for: "
+                f'"{event.description}". It may describe an open incident.\n\n'
+                f"Reason: {outcome.result.error or outcome.result.status}",
+                level="warning",
+                property_id=prop.id,
+            )
+            return None
+        target_id = parse_triage_result(outcome.result.result, outcome.open_ids)
+        return self.repo.get(target_id) if target_id else None
+
+    def _attach(self, incident: Incident, event: IssueReported, prop: Property) -> None:
+        self.repo.add_report(
+            incident.id,
+            description=event.description,
+            reported_via=event.reported_via,
+            reporter=event.reporter,
+            severity=event.severity,
+            booking_id=event.booking_id,
+        )
+        severity = higher_severity(incident.severity, event.severity)
+        self.repo.update(incident.id, report_count=incident.report_count + 1, severity=severity)
+        escalated = f" Severity raised to {severity}." if severity != incident.severity else ""
+        self._ctx.notify(
+            f"Another report on the open incident at {prop.name}",
+            f'{event.reporter or event.reported_via} reported: "{event.description}"\n'
+            f"It was attached to the existing incident ({incident.report_count + 1} reports).{escalated}",
+            property_id=prop.id,
+            booking_id=incident.booking_id,
         )
 
-        options = [
-            ApprovalOption(
-                key=OPTION_REMEDIATE,
-                label="Fix it in time",
-                description="Schedule the fix with your maintenance contact and inform the guest.",
+    # --- Conversația cu mentenanța -----------------------------------------------------------
+
+    def _liaison_context(self, incident: Incident) -> dict[str, Any]:
+        return {
+            "incident_id": incident.id,
+            "property": self._property_name(incident.property_id),
+            "problem": incident.description,
+            "severity": incident.severity,
+            "reports": incident.report_count,
+            "affected_stay": self._stay_context(incident),
+            "maintenance_contact": incident.contact_staff_name,
+        }
+
+    async def on_staff_contact(self, event: StaffContactRequested) -> None:
+        await self.check_deadlines()
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            if incident is None or incident.status != "awaiting_staff" or incident.staff_questions:
+                return
+            contact = self._contact(incident.property_id)
+            if contact is None:
+                self._ctx.notify(
+                    f"No staff assigned to {self._property_name(incident.property_id)}",
+                    "Nobody could be asked how long the fix takes; the proposal is made without "
+                    "an estimate. Assign a maintenance person to this property.",
+                    level="warning",
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                )
+                self.repo.update(incident.id, eta_source="no_staff")
+                await self._emit(EstimateReady, incident)
+                return
+            incident = self.repo.update(
+                incident.id, contact_staff_id=contact.id, contact_staff_name=contact.name
             )
-        ]
-        if candidate is not None:
-            options.append(
-                ApprovalOption(
-                    key=OPTION_RELOCATE,
-                    label=f"Relocate guest to {candidate.name}",
-                    description=(
-                        f"{candidate.name} ({candidate.address}) is free for the stay, "
-                        f"sleeps {candidate.max_guests} and has {candidate.bedrooms} bedroom(s)."
+            outcome = await self.agents.staff_liaison(
+                incident,
+                mode="ask",
+                context=self._liaison_context(incident),
+                send_to_staff=self.send_to_staff,
+            )
+            if not outcome.sent:  # fallback explicit: întrebarea-șablon
+                incident = self.repo.get(incident.id) or incident
+                await self.send_to_staff(
+                    incident,
+                    templates.staff_question(
+                        contact.name,
+                        self._property_name(incident.property_id),
+                        incident.description,
+                        self._stay_context(incident),
                     ),
                 )
-            )
 
+    async def on_staff_replied(self, event: StaffReplied) -> None:
+        await self.check_deadlines()
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            if incident is None or incident.status != "awaiting_staff":
+                return  # răspunsul rămâne în conversație; nu mai schimbă nimic
+            outcome = await self.agents.staff_liaison(
+                incident,
+                mode="interpret",
+                context=self._liaison_context(incident),
+                send_to_staff=self.send_to_staff,
+            )
+            if outcome.estimate is not None:
+                estimate = outcome.estimate
+                self.repo.update(
+                    incident.id,
+                    eta_hours=estimate["hours"],
+                    eta_source="staff" if estimate["hours"] else "unknown",
+                    eta_quote=estimate["quote"],
+                    eta_confidence=estimate["confidence"],
+                    staff_deadline=None,
+                )
+            elif outcome.sent:
+                return  # a cerut o clarificare; rulează din nou la următorul răspuns
+            else:  # fallback explicit: estimare necunoscută
+                reply = self.repo.staff_message(event.message_id)
+                self.repo.update(
+                    incident.id,
+                    eta_hours=None,
+                    eta_source="unknown",
+                    eta_quote=reply.body if reply else None,
+                    staff_deadline=None,
+                )
+                self._ctx.notify(
+                    "Could not read the repair estimate",
+                    f"The maintenance reply could not be interpreted "
+                    f"({outcome.result.error or outcome.result.status}); the proposal is made "
+                    "without an estimate.",
+                    level="warning",
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                )
+            await self._emit(EstimateReady, incident)
+
+    async def on_sim_staff_reply(self, event: SimStaffReplyDue) -> None:
+        """Simulare: personalul de mentenanță răspunde la ultima întrebare."""
+        incident = self.repo.get(event.incident_id)
+        if incident is None or incident.status != "awaiting_staff":
+            return
+        conversation = self.repo.staff_messages(incident.id)
+        questions = [m for m in conversation if m.direction == "to_staff"]
+        if not questions:
+            return
+        round_index = len(questions) - 1
+        prop_name = self._property_name(incident.property_id)
+        text = await self.agents.simulated_staff(
+            incident,
+            mode="reply",
+            staff_name=incident.contact_staff_name or "Maintenance",
+            property_name=prop_name,
+            description=incident.description,
+            message=questions[-1].body,
+            round_index=round_index,
+        )
+        text = text or scripted_staff_reply(incident.description, round_index)
+        await self.receive_staff_reply(
+            incident.id, text, staff_id=incident.contact_staff_id, simulated=True
+        )
+
+    async def on_timeout(self, event: IncidentTimeout) -> None:
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            if incident is None:
+                return
+            name = self._property_name(incident.property_id)
+            if event.kind == "staff" and incident.status == "awaiting_staff":
+                self.repo.update(incident.id, eta_hours=None, eta_source="timeout", staff_deadline=None)
+                self._ctx.notify(
+                    f"Maintenance did not reply about {name}",
+                    f"No answer in {self.settings.staff_reply_timeout_min:g} minutes; the proposal "
+                    "is made without a repair estimate.",
+                    level="warning",
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                )
+                await self._emit(EstimateReady, incident)
+            elif event.kind == "guest" and incident.status == "awaiting_guest":
+                await self._emit(GuestAnsweredRelocation, incident, choice="timeout")
+
+    # --- Propunerea către host ----------------------------------------------------------------
+
+    def _facts(self, incident: Incident, candidate: Property | None) -> ProposalFacts:
+        booking = self._live_booking(incident)
+        has_booking = booking is not None
+        hours_until = (
+            hours_until_check_in(
+                booking.check_in, self._ctx.world.host_rules().check_in_time, self._now_local()
+            )
+            if booking
+            else None
+        )
+        in_house = bool(hours_until is not None and hours_until <= 0)
+        in_time = fix_in_time(
+            incident.eta_hours,
+            hours_until,
+            in_house,
+            margin_hours=self.settings.fix_margin_hours,
+            inhouse_tolerable_hours=self.settings.inhouse_tolerable_hours,
+        )
+        option = recommend(
+            has_booking=has_booking, in_time=in_time, relocation_available=candidate is not None
+        )
+        reason = explain_recommendation(
+            option,
+            eta_hours=incident.eta_hours,
+            hours_until=hours_until,
+            in_house=in_house,
+            has_booking=has_booking,
+            in_time=in_time,
+            relocation_available=candidate is not None,
+            inhouse_tolerable_hours=self.settings.inhouse_tolerable_hours,
+        )
+        return ProposalFacts(
+            property_name=self._property_name(incident.property_id),
+            description=incident.description,
+            booking=booking,
+            has_booking=has_booking,
+            in_house=in_house,
+            hours_until=hours_until,
+            eta_hours=incident.eta_hours,
+            eta_source=incident.eta_source or "unknown",
+            eta_quote=incident.eta_quote,
+            contact_name=incident.contact_staff_name,
+            candidate=candidate,
+            in_time=in_time,
+            recommendation=option,
+            reason=reason,
+        )
+
+    def _template_drafts(self, facts: ProposalFacts) -> GuestDrafts:
+        booking, needed = facts.booking, facts.needed_messages()
+        if booking is None:
+            return GuestDrafts()
+        name, prop, problem = booking.guest_name, facts.property_name, facts.description
+        target = facts.candidate
+        values = {
+            "relocation_offer": templates.relocation_offer(name, prop, problem, target.name, target.address)
+            if target else None,
+            "relocation_accepted": templates.relocation_accepted(name, target.name, target.address)
+            if target else None,
+            "relocation_declined": templates.fix_apology(name, prop, problem, facts.eta_hours),
+            "fix_apology": templates.fix_apology(name, prop, problem, facts.eta_hours),
+        }  # fmt: skip
+        return GuestDrafts(**{key: values[key] for key in needed})
+
+    async def on_estimate_ready(self, event: EstimateReady) -> None:
+        await self.check_deadlines()
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            if incident is None:
+                return
+            fresh = incident.status == "awaiting_staff"
+            redo = incident.status == "awaiting_decision" and incident.approval_id is None
+            if not (fresh or redo):
+                return
+            booking = self._live_booking(incident)
+            prop = self._ctx.world.get_property(incident.property_id)
+            candidate = (
+                await self._find_relocation(booking, prop, self._ctx.clock.today())
+                if booking and prop
+                else None
+            )
+            facts = self._facts(incident, candidate)
+
+            needed = facts.needed_messages()
+            drafts, source = None, "llm"
+            if needed:
+                outcome = await self.agents.proposal(incident, facts)
+                drafts = outcome.drafts
+                if drafts is None or not all(valid_guest_message(getattr(drafts, n)) for n in needed):
+                    drafts, source = self._template_drafts(facts), "template"
+            else:
+                drafts, source = GuestDrafts(), None
+
+            round_no = incident.proposal_round + 1
+            incident = self.repo.update(
+                incident.id,
+                status="awaiting_decision",
+                in_house=facts.in_house,
+                hours_until_check_in=facts.hours_until,
+                relocation_property_id=candidate.id if candidate else None,
+                recommendation=facts.recommendation,
+                recommendation_reason=facts.reason,
+                drafts=drafts,
+                drafts_source=source,
+                proposal_round=round_no,
+                staff_deadline=None,
+            )
+            approval = await self._ctx.approvals.request(
+                feature=self._ctx.feature,
+                kind=APPROVAL_KIND,
+                title=f"Incident at {facts.property_name}",
+                summary=self._proposal_summary(incident, facts),
+                options=self._proposal_options(incident, facts, drafts),
+                payload={"incident_id": incident.id, "round": round_no},
+                booking_id=incident.booking_id,
+                property_id=incident.property_id,
+                dedupe_key=f"{self._ctx.feature}:incident:{incident.id}:proposal:{round_no}",
+            )
+            self.repo.update(incident.id, approval_id=approval.id)
+
+    def _proposal_summary(self, incident: Incident, facts: ProposalFacts) -> str:
         lines = [
-            f"Reported by {event.reporter or 'unknown'} ({event.reported_via}), "
-            f"severity {event.severity}: {event.description}"
+            f"Reported by {incident.reporter or 'unknown'} ({incident.reported_via}), "
+            f"severity {incident.severity}: {incident.description}"
         ]
+        if incident.report_count > 1:
+            lines.append(f"{incident.report_count} reports describe this problem.")
+        contact = incident.contact_staff_name
+        if incident.eta_source == "no_staff":
+            lines.append("No maintenance person is assigned to this property.")
+        elif incident.eta_source == "timeout":
+            lines.append(f"Maintenance ({contact}) did not reply in time.")
+        elif incident.eta_quote:
+            lines.append(f'Maintenance ({contact}) replied: "{incident.eta_quote}"')
+        lines.append(
+            f"Estimated fix time: {format_hours(incident.eta_hours)}"
+            + (f" (confidence {incident.eta_confidence})" if incident.eta_hours and incident.eta_confidence else "")
+            + "."
+        )
+        booking = facts.booking
         if booking is not None:
+            when = (
+                "the guest is in the property now"
+                if facts.in_house
+                else f"check-in in {format_hours(facts.hours_until)}"
+            )
             lines.append(
                 f"Affected stay: {booking.guest_name}, {booking.guest_count} guest(s), "
-                f"{booking.check_in} to {booking.check_out}."
+                f"{booking.check_in} to {booking.check_out}; {when}."
             )
-            if candidate is None:
+            if facts.candidate is None:
                 lines.append("No compatible free property was found, so relocation is not offered.")
         else:
             lines.append("No current or upcoming stay is affected.")
+        label = "Offer relocation" if facts.recommendation == OPTION_RELOCATE else "Fix in place"
+        lines.append(f"Recommendation: {label}. {facts.reason}")
+        if incident.drafts_source == "template":
+            lines.append("The guest messages below are templates: the AI draft was not available.")
+        return "\n".join(lines)
 
-        approval = await ctx.approvals.request(
-            feature=ctx.feature,
-            kind=APPROVAL_KIND,
-            title=f"Incident at {prop.name}",
-            summary="\n".join(lines),
-            options=options,
-            payload={"incident_id": incident_id},
-            booking_id=booking.id if booking else None,
-            property_id=prop.id,
-            dedupe_key=f"{ctx.feature}:incident:{incident_id}",
+    def _proposal_options(
+        self, incident: Incident, facts: ProposalFacts, drafts: GuestDrafts
+    ) -> list[ApprovalOption]:
+        contact = incident.contact_staff_name or "the maintenance team"
+        if drafts.fix_apology:
+            remediate_msg = f'Guest will receive: "{drafts.fix_apology}"'
+        elif facts.has_booking:
+            remediate_msg = "No message to the guest: the fix should be done before they arrive."
+        else:
+            remediate_msg = "No guest is affected."
+        remediate = ApprovalOption(
+            key=OPTION_REMEDIATE,
+            label="Fix it in place",
+            description=f"{contact} gets a repair task. {remediate_msg}",
         )
-        self._update(incident_id, approval_id=approval.id)
+        options = [remediate]
+        target = facts.candidate
+        if target is not None:
+            relocate = ApprovalOption(
+                key=OPTION_RELOCATE,
+                label=f"Offer relocation to {target.name}",
+                description=(
+                    f"{target.name} ({target.address}) is free for the rest of the stay, sleeps "
+                    f"{target.max_guests} and has {target.bedrooms} bedroom(s).\n"
+                    f'Guest will receive: "{drafts.relocation_offer}"\n'
+                    f'If the guest accepts: "{drafts.relocation_accepted}"\n'
+                    f'If the guest stays: "{drafts.relocation_declined}"'
+                ),
+            )
+            options = [relocate, remediate] if facts.recommendation == OPTION_RELOCATE else [remediate, relocate]
+        return options
 
     async def _find_relocation(
         self, booking: Booking, original: Property, today: date
     ) -> Property | None:
-        """Cea mai apropiată proprietate compatibilă, liberă pe restul sejurului."""
-        ctx = self._ctx
+        """Cea mai potrivită proprietate compatibilă, liberă pe restul sejurului."""
         start, end = max(booking.check_in, today), booking.check_out
-        nights = (end - start).days
-        if nights <= 0:
+        if (end - start).days <= 0:
             return None
         shared = set(original.amenities)
         candidates = sorted(
-            (p for p in ctx.world.list_properties() if is_compatible(p, original, booking.guest_count)),
+            (
+                p
+                for p in self._ctx.world.list_properties()
+                if is_compatible(p, original, booking.guest_count)
+            ),
             key=lambda p: (-len(shared & set(p.amenities)), abs(p.base_price - original.base_price)),
         )
         for candidate in candidates:
-            try:
-                days = await ctx.calendar.get_days(candidate.id, start, end)
-            except Exception as exc:  # calendar indisponibil: candidatul e sărit, nu blocăm fluxul
-                logger.warning("Calendar check failed for %s: %s", candidate.id, exc)
-                continue
-            if len(days) == nights and all(day.available for day in days):
+            if await self._is_free(candidate.id, start, end):
                 return candidate
         return None
 
-    # --- Decizia hostului -> acțiune -----------------------------------------------
+    async def _is_free(self, property_id: str, start: date, end: date) -> bool:
+        try:
+            days = await self._ctx.calendar.get_days(property_id, start, end)
+        except Exception as exc:  # calendar indisponibil: candidatul e sărit, nu blocăm fluxul
+            logger.warning("Calendar check failed for %s: %s", property_id, exc)
+            return False
+        return len(days) == (end - start).days and all(day.available for day in days)
+
+    # --- Decizia hostului ------------------------------------------------------------------
 
     async def on_decision(self, event: ApprovalDecided) -> None:
-        incident = self.get(str(event.payload.get("incident_id")))
-        if incident is None:
-            return
-        if event.decision == "rejected":
-            await self._dismiss(incident)
-        elif event.option == OPTION_RELOCATE:
-            await self._relocate(incident)
-        else:
-            await self._remediate(incident)
+        async with self._incident_locks[str(event.payload.get("incident_id"))]:
+            incident = self.repo.get(str(event.payload.get("incident_id")))
+            if (
+                incident is None
+                or incident.approval_id != event.approval_id
+                or incident.status != "awaiting_decision"
+            ):
+                return  # aprobare depășită (ex. propunere refăcută) sau deja tratată
+            if event.decision == "rejected":
+                await self._dismiss(incident)
+                return
+            option = OPTION_RELOCATE if event.option == OPTION_RELOCATE else OPTION_REMEDIATE
+            await self._ctx.bus.publish(
+                IncidentDecided(
+                    incident_id=incident.id,
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                    option=option,  # type: ignore[arg-type]
+                    source=f"feature:{self._ctx.feature}",
+                )
+            )
+            booking = self._live_booking(incident)
+            drafts = incident.drafts or GuestDrafts()
+            if option == OPTION_RELOCATE and incident.relocation_property_id and booking:
+                await self._offer_relocation(incident, booking, drafts)
+            else:
+                await self._start_remediation(
+                    incident, decided=OPTION_REMEDIATE, guest_message=drafts.fix_apology
+                )
 
     async def _dismiss(self, incident: Incident) -> None:
-        self._update(incident.id, status="dismissed", resolution="Dismissed by the host.")
+        self.repo.update(incident.id, status="dismissed", resolution="Dismissed by the host.")
         self._ctx.notify(
             "Incident dismissed",
             f"No action was taken for: {incident.description}",
@@ -206,73 +876,155 @@ class IncidentService:
         )
         await self._publish_resolved(incident, "dismissed")
 
-    async def _remediate(self, incident: Incident) -> None:
-        ctx = self._ctx
-        prop = ctx.world.get_property(incident.property_id)
-        name = prop.name if prop else incident.property_id
-        staff = [m for m in ctx.world.list_staff() if incident.property_id in m.property_ids]
-        contact = next((m for m in staff if m.role == "maintenance"), staff[0] if staff else None)
+    async def _offer_relocation(self, incident: Incident, booking: Booking, drafts: GuestDrafts) -> None:
+        target_name = self._property_name(incident.relocation_property_id or "")
+        await self._message_guest(booking.id, drafts.relocation_offer)
+        incident = self.repo.update(
+            incident.id,
+            status="awaiting_guest",
+            decided_option=OPTION_RELOCATE,
+            guest_deadline=utc_now() + timedelta(minutes=self.settings.guest_answer_timeout_min),
+            resolution=f"Relocation to {target_name} offered to the guest.",
+        )
+        self._ctx.notify(
+            f"Relocation offered to {booking.guest_name}",
+            f"The guest was offered {target_name}; waiting for their answer.",
+            property_id=incident.property_id,
+            booking_id=booking.id,
+        )
+        if self.settings.sim_enabled and self.settings.sim_guest_answer != "off":
+            await self._later(self.settings.sim_guest_delay_s, self._event(SimGuestAnswerDue, incident))
+
+    async def _start_remediation(
+        self, incident: Incident, *, decided: str, guest_message: str | None
+    ) -> None:
+        booking = self._live_booking(incident)
+        if booking is not None:
+            await self._message_guest(booking.id, guest_message)
+        contact = self._contact(incident.property_id)
         who = f"{contact.name} ({contact.role})" if contact else "no staff assigned to this property"
-        self._update(
+        incident = self.repo.update(
             incident.id,
             status="remediation_scheduled",
+            decided_option=incident.decided_option or decided,
             resolution=f"Remediation approved. Contact: {who}.",
         )
-        if incident.booking_id:
-            booking = ctx.world.get_booking(incident.booking_id)
-            first_name = booking.guest_name.split()[0] if booking else "there"
-            await self._message_guest(
-                incident.booking_id,
-                f"Hello {first_name}, we are aware of an issue at {name} "
-                f"({incident.description}). Our team is on it and we will keep you posted. "
-                "Sorry for the inconvenience!",
-            )
-        ctx.notify(
+        task = await self._create_task(incident, f"Fix: {incident.description}")
+        name = self._property_name(incident.property_id)
+        self._ctx.notify(
             f"Remediation scheduled at {name}",
-            f"Issue: {incident.description}\nContact to dispatch: {who}.",
+            f"Issue: {incident.description}\nContact to dispatch: {who}. Task {task.id} created.",
             level="success",
             property_id=incident.property_id,
             booking_id=incident.booking_id,
         )
-        await self._publish_resolved(incident, "remediation")
 
-    async def _relocate(self, incident: Incident) -> None:
-        ctx = self._ctx
-        target = (
-            ctx.world.get_property(incident.relocation_property_id)
-            if incident.relocation_property_id
-            else None
+    async def _create_task(self, incident: Incident, description: str) -> StaffTask:
+        contact = self._contact(incident.property_id)
+        task = self.repo.create_task(
+            incident.id,
+            description=description,
+            staff_id=contact.id if contact else None,
+            staff_name=contact.name if contact else None,
         )
-        booking = ctx.world.get_booking(incident.booking_id) if incident.booking_id else None
-        if target is None or booking is None:
-            ctx.notify(
-                "Relocation could not be carried out",
-                "The incident has no relocation target or no affected booking.",
+        if contact is None:
+            self._ctx.notify(
+                f"Task {task.id} has nobody assigned",
+                f"No staff is assigned to {self._property_name(incident.property_id)}. "
+                f'Find someone for: "{description}".',
                 level="warning",
                 property_id=incident.property_id,
             )
+            return task  # personalul simulat nu poate termina o sarcină neasignată
+        self._note_to_staff(
+            incident,
+            contact.id,
+            contact.name,
+            templates.staff_go_ahead(
+                contact.name, task.id, self._property_name(incident.property_id), description
+            ),
+        )
+        if self.settings.sim_enabled:
+            await self._later(
+                self.settings.sim_task_delay_s, self._event(SimTaskDue, incident, task_id=task.id)
+            )
+        return task
+
+    # --- Răspunsul oaspetelui -------------------------------------------------------------
+
+    async def on_sim_guest_answer(self, event: SimGuestAnswerDue) -> None:
+        incident = self.repo.get(event.incident_id)
+        if incident is None or incident.status != "awaiting_guest":
+            return
+        if self.settings.sim_guest_answer in ("accept", "stay"):
+            await self.answer_relocation(incident.id, self.settings.sim_guest_answer, simulated=True)
+
+    async def on_guest_answer(self, event: GuestAnsweredRelocation) -> None:
+        await self.check_deadlines()
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            if incident is None or incident.status != "awaiting_guest":
+                return
+            incident = self.repo.update(incident.id, guest_answer=event.choice, guest_deadline=None)
+            booking = self._live_booking(incident)
+            drafts = incident.drafts or GuestDrafts()
+            if event.choice == "accept" and booking is not None:
+                await self._relocate(incident, booking, drafts)
+                return
+            if event.choice == "timeout":
+                self._ctx.notify(
+                    "The guest did not answer the relocation offer",
+                    f"No answer in {self.settings.guest_answer_timeout_min:g} minutes: the guest "
+                    "stays and the fix goes ahead.",
+                    level="warning",
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                )
+            await self._start_remediation(
+                incident, decided=OPTION_RELOCATE, guest_message=drafts.relocation_declined
+            )
+
+    async def _relocate(self, incident: Incident, booking: Booking, drafts: GuestDrafts) -> None:
+        ctx = self._ctx
+        target = ctx.world.get_property(incident.relocation_property_id or "")
+        start, end = max(booking.check_in, ctx.clock.today()), booking.check_out
+        if target is None or not await self._is_free(target.id, start, end):
+            # Proprietatea s-a ocupat între timp: nimic către oaspete, propunere nouă.
+            name = target.name if target else "The relocation target"
+            self.repo.update(
+                incident.id,
+                status="awaiting_decision",
+                approval_id=None,
+                guest_answer=None,
+                decided_option=None,
+                resolution=None,
+            )
+            ctx.notify(
+                f"{name} is no longer free",
+                f"{booking.guest_name} accepted the move, but {name} was booked in the meantime. "
+                "Nothing was confirmed to the guest; a new proposal follows.",
+                level="warning",
+                property_id=incident.property_id,
+                booking_id=booking.id,
+            )
+            await self._emit(EstimateReady, incident)
             return
 
         notes: list[str] = []
-        start, end = max(booking.check_in, ctx.clock.today()), booking.check_out
         try:
             await ctx.calendar.set_availability(target.id, start, end, False)
             notes.append(f"{target.name} is blocked from {start} to {end}.")
         except Exception as exc:  # fallback explicit: hostul blochează manual
             notes.append(f"Could not block {target.name} in the calendar ({exc}); block it manually.")
-
-        prop = ctx.world.get_property(incident.property_id)
-        await self._message_guest(
-            booking.id,
-            f"Hello {booking.guest_name.split()[0]}, because of an issue at "
-            f"{prop.name if prop else 'your apartment'} we would like to move you to "
-            f"{target.name} ({target.address}) for the rest of your stay, at no extra cost. "
-            "We will send the check-in details shortly. Sorry for the inconvenience!",
-        )
+        await self._message_guest(booking.id, drafts.relocation_accepted)
         notes.append("The reservation itself must still be moved in the PMS.")
-        self._update(
-            incident.id, status="relocated", resolution=f"Relocation to {target.name} approved."
+        incident = self.repo.update(
+            incident.id,
+            status="relocated",
+            resolution=f"Guest accepted; relocated to {target.name}.",
         )
+        task = await self._create_task(incident, f"Fix: {incident.description}")
+        notes.append(f"Repair task {task.id} created.")
         ctx.notify(
             f"{booking.guest_name} is being relocated to {target.name}",
             "\n".join(notes),
@@ -280,25 +1032,178 @@ class IncidentService:
             property_id=incident.property_id,
             booking_id=booking.id,
         )
-        await self._publish_resolved(incident, "relocation")
 
-    async def _message_guest(self, booking_id: str, text: str) -> None:
-        try:
-            await self._ctx.channel.send_to_guest(
-                booking_id, text, sender="host", feature=self._ctx.feature
+    # --- Sarcini și închidere -------------------------------------------------------------
+
+    async def on_sim_task(self, event: SimTaskDue) -> None:
+        task = self.repo.task(event.task_id)
+        incident = self.repo.get(event.incident_id)
+        if task is None or task.status != "open" or incident is None:
+            return
+        note = await self.agents.simulated_staff(
+            incident,
+            mode="done",
+            staff_name=task.staff_name or "Maintenance",
+            property_name=self._property_name(incident.property_id),
+            description=incident.description,
+            message=task.description,
+            round_index=0,
+        )
+        await self.complete_task(
+            task.id,
+            note=note or scripted_task_note(incident.description),
+            completed_by=task.staff_name,
+        )
+
+    async def on_task_completed(self, event: IncidentTaskCompleted) -> None:
+        await self.check_deadlines()
+        async with self._incident_locks[event.incident_id]:
+            incident = self.repo.get(event.incident_id)
+            task = self.repo.task(event.task_id)
+            if incident is None or incident.status not in ("remediation_scheduled", "relocated"):
+                return
+            if task is not None:
+                self._note_to_staff(
+                    incident, task.staff_id, task.staff_name, templates.staff_thanks(task.staff_name, task.id)
+                )
+            tasks = self.repo.tasks(incident.id)
+            if any(t.status == "open" for t in tasks) or incident.closure_approval_id:
+                return
+            await self._request_closure(incident, tasks)
+
+    def _guest_was_told(self, incident: Incident) -> bool:
+        """Oaspetele a rămas și a primit scuzele: îi spunem și când s-a rezolvat."""
+        drafts = incident.drafts or GuestDrafts()
+        if incident.status != "remediation_scheduled":
+            return False
+        if incident.decided_option == OPTION_RELOCATE:
+            return bool(drafts.relocation_declined)
+        return bool(drafts.fix_apology)
+
+    async def _request_closure(self, incident: Incident, tasks: list[StaffTask]) -> None:
+        booking = self._live_booking(incident)
+        guest_needed = booking is not None and self._guest_was_told(incident)
+        history = self._history(incident, tasks)
+        outcome = await self.agents.closure(incident, history, guest_needed)
+        summary, guest_message, source = outcome.summary, outcome.guest_message, "llm"
+        if not summary or (guest_needed and not valid_guest_message(guest_message)):
+            summary = self._raw_history_text(history)
+            guest_message = (
+                templates.issue_fixed(
+                    booking.guest_name, self._property_name(incident.property_id), incident.description
+                )
+                if guest_needed and booking
+                else None
             )
-        except ChannelError:
-            pass  # ChannelGateway a notificat deja hostul; restul acțiunii continuă
+            source = "template"
+        if source == "template":
+            summary += "\n(The AI summary was not available; these are the recorded facts.)"
+        round_no = incident.closure_round + 1
+        option = ApprovalOption(
+            key=OPTION_CLOSE,
+            label="Close the incident",
+            description=(
+                f'Guest will receive: "{guest_message}"' if guest_message else "No message to the guest."
+            ),
+        )
+        approval = await self._ctx.approvals.request(
+            feature=self._ctx.feature,
+            kind=CLOSURE_KIND,
+            title=f"Close the incident at {self._property_name(incident.property_id)}?",
+            summary=summary
+            + "\n\nApprove to close the incident. Reject (with a note) to send the staff back.",
+            options=[option],
+            payload={"incident_id": incident.id, "round": round_no},
+            booking_id=incident.booking_id,
+            property_id=incident.property_id,
+            dedupe_key=f"{self._ctx.feature}:incident:{incident.id}:closure:{round_no}",
+        )
+        self.repo.update(
+            incident.id,
+            closure_round=round_no,
+            closure_approval_id=approval.id,
+            closure_message=guest_message,
+        )
 
-    async def _publish_resolved(
-        self, incident: Incident, resolution: Literal["remediation", "relocation", "dismissed"]
-    ) -> None:
+    def _history(self, incident: Incident, tasks: list[StaffTask]) -> dict[str, Any]:
+        booking = self._live_booking(incident)
+        return {
+            "guest_first_name": templates.first_name(booking.guest_name) if booking else None,
+            "property": self._property_name(incident.property_id),
+            "problem": incident.description,
+            "reports": [
+                {"by": r.reporter or r.reported_via, "via": r.reported_via, "text": r.description[:200]}
+                for r in self.repo.reports(incident.id)
+            ],
+            "maintenance_estimate": format_hours(incident.eta_hours),
+            "maintenance_quote": incident.eta_quote,
+            "host_decision": incident.decided_option,
+            "guest_choice": incident.guest_answer,
+            "status": incident.status,
+            "tasks": [
+                {"id": t.id, "what": t.description, "by": t.completed_by or t.staff_name,
+                 "note": t.completion_note, "done_at": t.completed_at.isoformat()[:16] if t.completed_at else None}
+                for t in tasks
+            ],
+        }  # fmt: skip
+
+    @staticmethod
+    def _raw_history_text(history: dict[str, Any]) -> str:
+        lines = [f"Problem at {history['property']}: {history['problem']}"]
+        lines += [f"- Reported by {r['by']} ({r['via']}): {r['text']}" for r in history["reports"]]
+        if history["maintenance_quote"]:
+            lines.append(f'- Maintenance estimate: {history["maintenance_estimate"]} ("{history["maintenance_quote"]}")')
+        lines.append(f"- Host decision: {history['host_decision'] or 'n/a'}; guest choice: {history['guest_choice'] or 'n/a'}")
+        lines += [
+            f"- Task {t['id']} done by {t['by']}: {t['note'] or 'no note'}" for t in history["tasks"]
+        ]
+        return "\n".join(lines)
+
+    async def on_closure_decision(self, event: ApprovalDecided) -> None:
+        async with self._incident_locks[str(event.payload.get("incident_id"))]:
+            incident = self.repo.get(str(event.payload.get("incident_id")))
+            if (
+                incident is None
+                or incident.closure_approval_id != event.approval_id
+                or incident.status not in ("remediation_scheduled", "relocated")
+            ):
+                return
+            name = self._property_name(incident.property_id)
+            if event.decision == "rejected":
+                note = (event.note or "").strip()
+                self.repo.update(incident.id, closure_approval_id=None, closure_message=None)
+                task = await self._create_task(
+                    incident,
+                    f"Follow-up: {note}" if note else "Follow-up requested by the host",
+                )
+                self._ctx.notify(
+                    f"Incident at {name} stays open",
+                    f"Follow-up task {task.id} was created for {task.staff_name or 'nobody (unassigned)'}.",
+                    property_id=incident.property_id,
+                    booking_id=incident.booking_id,
+                )
+                return
+            booking = self._live_booking(incident)
+            if booking is not None:
+                await self._message_guest(booking.id, incident.closure_message)
+            resolution = "relocation" if incident.status == "relocated" else "remediation"
+            self.repo.update(incident.id, status="resolved", resolution=f"Resolved ({resolution}).")
+            self._ctx.notify(
+                f"Incident at {name} resolved",
+                incident.description,
+                level="success",
+                property_id=incident.property_id,
+                booking_id=incident.booking_id,
+            )
+            await self._publish_resolved(incident, resolution)
+
+    async def _publish_resolved(self, incident: Incident, resolution: str) -> None:
         await self._ctx.bus.publish(
             IncidentResolved(
                 incident_id=incident.id,
                 property_id=incident.property_id,
                 booking_id=incident.booking_id,
-                resolution=resolution,
+                resolution=resolution,  # type: ignore[arg-type]
                 source=f"feature:{self._ctx.feature}",
             )
         )

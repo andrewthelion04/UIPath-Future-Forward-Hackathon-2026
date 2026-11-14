@@ -1,7 +1,9 @@
 """Politica deterministă a LLM-ului mock pentru agentul F4.
 
-Citește statisticile și recenziile critice prin unelte, apoi grupează problemele pe teme
-după cuvinte-cheie. Suficient pentru demo și teste fără cheie API.
+Citește statisticile și recenziile critice prin unelte, grupează problemele pe teme după
+cuvinte-cheie, înregistrează câte o recomandare per temă prin `add_recommendation` (toate
+într-un singur mesaj, ca rundele să rămână puține) și încheie cu `finish`. Suficient pentru
+demo și teste fără cheie API.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.agent.mock_support import call, called_tools, failed, finish, last_result
-from app.ports.llm import ChatMessage, ChatRequest
+from app.ports.llm import ChatMessage, ChatRequest, ToolCall
 
 # temă -> (cuvinte-cheie, recomandare)
 THEMES: list[tuple[str, tuple[str, ...], str]] = [
@@ -44,6 +46,8 @@ THEMES: list[tuple[str, tuple[str, ...], str]] = [
         "Sleep comfort: replace the mattress guests mention or add a firm topper.",
     ),
 ]
+MAX_THEMES = 4
+QUOTE_CHARS = 160
 
 
 def policy(request: ChatRequest) -> ChatMessage:
@@ -67,36 +71,55 @@ def policy(request: ChatRequest) -> ChatMessage:
             reason="The tools failed and I must not invent findings.",
         )
 
-    recommendations, evidence = _recommend(reviews)
+    found = _recommend(reviews)
     summary = (
         f"{stats.get('count')} reviews, average rating {stats.get('average')}."
         if isinstance(stats, dict)
         else ""
     )
-    if not recommendations:
+    if not found:
         return finish(
             f"{summary} Guests report nothing that needs fixing; keep the current standard.",
             [],
             reason="No recurring problem appears in the reviews.",
         )
-    lines = [f"{i}. {text}" for i, text in enumerate(recommendations, start=1)]
+    if "add_recommendation" not in done:
+        return ChatMessage(
+            role="assistant",
+            tool_calls=[
+                ToolCall.make(
+                    "add_recommendation",
+                    theme=item["theme"],
+                    priority=item["priority"],
+                    action=item["action"],
+                    quotes=item["quotes"],
+                    reason=f"{len(item['quotes'])} critical review(s) mention {item['theme']}.",
+                )
+                for item in found
+            ],
+        )
     return finish(
-        f"{summary}\n" + "\n".join(lines),
-        evidence,
-        reason="Each recommendation is tied to what guests wrote.",
+        f"{summary} {len(found)} recommendation(s) recorded, most impactful first.",
+        [f'{item["theme"]}: "{item["quotes"][0]}"' for item in found],
+        reason="Each recommendation is recorded and tied to what guests wrote.",
     )
 
 
-def _recommend(reviews: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    scored: list[tuple[int, str, str]] = []
+def _recommend(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scored: list[tuple[int, dict[str, Any]]] = []
     for theme, keywords, advice in THEMES:
-        quotes = [
-            str(review.get("text", ""))
+        matching = [
+            review
             for review in reviews
             if any(word in str(review.get("text", "")).lower() for word in keywords)
         ]
-        if quotes:
-            scored.append((len(quotes), f"{theme}: {advice}", f'{theme}: "{quotes[0][:160]}"'))
+        if not matching:
+            continue
+        lowest = min(float(review.get("rating") or 5) for review in matching)
+        priority = "high" if len(matching) >= 2 or lowest <= 2 else "medium" if lowest <= 3 else "low"
+        quotes = [str(review.get("text", ""))[:QUOTE_CHARS] for review in matching[:2]]
+        scored.append(
+            (len(matching), {"theme": theme, "priority": priority, "action": advice, "quotes": quotes})
+        )
     scored.sort(key=lambda item: -item[0])
-    top = scored[:4]
-    return [item[1] for item in top], [item[2] for item in top]
+    return [item for _, item in scored[:MAX_THEMES]]
