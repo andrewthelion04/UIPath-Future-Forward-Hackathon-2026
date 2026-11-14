@@ -53,7 +53,7 @@ def test_last_minute_cancellation_proposes_a_price_just_under_the_cheapest_compa
 
     (approval,) = client.get("/approvals").json()
     assert (approval["feature"], approval["kind"]) == ("f5_relisting", "relist_price")
-    assert approval["title"] == "Relist Old Town Studio at 65.96 EUR/night?"
+    assert approval["title"] == "Relist Old Town Studio at 65.96–75.85 EUR/night?"
     assert "Lipscani Cozy Studio at 68 EUR/night" in approval["summary"]
     # Până la aprobare, prețul din calendar rămâne cel vechi (miercuri, joi, vineri).
     assert calendar(client, emma) == [(True, 70.0), (True, 70.0), (True, 80.5)]
@@ -65,9 +65,9 @@ def test_approved_proposal_updates_the_calendar_through_the_adapter(client):
 
     assert approve(client, approval["id"])["completed"] is True
 
-    assert calendar(client, emma) == [(True, 65.96)] * 3
+    assert calendar(client, emma) == [(True, 65.96), (True, 65.96), (True, 75.85)]
     assert client.get("/f5/proposals").json()[0]["status"] == "applied"
-    assert client.get("/notifications").json()[0]["title"] == "Old Town Studio relisted at 65.96 EUR/night"
+    assert client.get("/notifications").json()[0]["title"] == "Old Town Studio relisted at 65.96–75.85 EUR/night"
 
 
 def test_rejected_proposal_leaves_the_price_unchanged(client):
@@ -122,7 +122,7 @@ def test_host_discount_limit_is_enforced_in_code(settings):
         assert proposal["market_attribution"] == "Test market data"  # sursa se creditează în UI
         (approval,) = client.get("/approvals").json()
         approve(client, approval["id"])
-        assert calendar(client, emma) == [(True, 52.5)] * 3
+        assert calendar(client, emma) == [(True, 52.5), (True, 52.5), (True, 60.38)]
 
 
 @pytest.mark.parametrize(
@@ -182,14 +182,12 @@ def test_pms_without_calendar_writes_degrades_to_manual_instructions(settings):
                              pms_provider=booking.pms_provider, source_channel=booking.source_channel),
         )  # fmt: skip
         client.portal.call(container.bus.join, 10)
-        (approval,) = client.get("/approvals").json()
-
-        approve(client, approval["id"])
-
+        # Fără citirea calendarului nu putem inventa tarifele originale sau cere aprobarea.
+        assert client.get("/approvals").json() == []
         assert client.get("/f5/proposals").json()[0]["status"] == "failed"
         notification = client.get("/notifications").json()[0]
         assert notification["level"] == "warning" and "could not be applied" in notification["title"]
-        assert "Set 97 EUR/night" in notification["body"] and "manually" in notification["body"]
+        assert "read_calendar" in notification["body"] and "manually" in notification["body"]
 
 
 def test_pricing_rules():

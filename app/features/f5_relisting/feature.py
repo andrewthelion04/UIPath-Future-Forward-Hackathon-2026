@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core.contracts.events import BookingCancelled
 from app.core.feature_context import FeatureContext
@@ -13,7 +13,7 @@ def build_router(relisting: Relisting) -> APIRouter:
     router = APIRouter(tags=["f5 · relisting"])
 
     @router.get("/f5/proposals", response_model=list[RelistProposal])
-    async def list_proposals(limit: int = 50) -> list[RelistProposal]:
+    async def list_proposals(limit: int = Query(default=50, ge=1, le=200)) -> list[RelistProposal]:
         return relisting.list(limit)
 
     return router

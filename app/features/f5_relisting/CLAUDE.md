@@ -11,18 +11,23 @@ La o anulare de ultim moment, caută în datele de piață cel mai ieftin anunț
 - Cereri de aprobare: `relist_price` — schimbarea prețului pentru nopțile eliberate.
 
 ## Stare curentă
-- Anulare → verificarea ferestrei de ultim moment (`last_minute_window_days` din regulile hostului) → comparabile din port → cel mai ieftin comparabil → preț propus → aprobare → calendar.
+- Faza 1 implementată: anulare → fereastră de ultim moment → snapshot calendar validat → comparabile → tarife proporționale pe nopți → aprobare → recitire calendar → aplicare.
 - Comparabil (`is_comparable`): are cel puțin facilitățile noastre, același număr de dormitoare, loc suficient, aceeași monedă.
-- Preț (`propose_price`): comparabilul minus `F5_UNDERCUT_PCT` (implicit 3%), dar nu sub pragul `preț de bază × (1 − max_relist_discount_pct)`.
-- Aprobare → `calendar.set_availability` + `calendar.set_price` → `applied`. Respingere → `rejected`, calendar neschimbat.
+- Preț: comparabilul minus `F5_UNDERCUT_PCT` stabilește factorul față de prețul de bază; fiecare tarif original este înmulțit cu același factor, cu prag și plafon propriu. Programul exact este în `nightly_prices`; câmpurile scalare rămân referințe compatibile cu API-ul vechi.
+- Aprobare → verificare integrală a calendarului → `calendar.set_price` pe fiecare noapte → `applied`. Respingere → `rejected`. Nopțile ocupate sau tarifele schimbate produc `conflict`, fără scrieri. Calendarul imposibil de verificat produce `failed`.
+- `expired` de la check-in, la ora hostului în `F5_TIMEZONE`; starea este persistată la citire sau decizie. Deciziile târzii nu modifică tarifele.
 - Fallback-uri explicite, fiecare cu notificare: anulare care nu e de ultim moment, date de piață indisponibile sau timeout (`failed`), niciun comparabil (`no_comparable`), PMS care nu poate scrie prețul (`failed`, cu instrucțiuni de aplicare manuală).
 - `GET /f5/proposals` și pagina de UI arată propunerile; pagina afișează și creditul sursei de date.
-- Setări proprii: `F5_UNDERCUT_PCT`, `F5_MARKET_TIMEOUT_S`.
+- Setări proprii: `F5_UNDERCUT_PCT`, `F5_MARKET_TIMEOUT_S`, `F5_CALENDAR_TIMEOUT_S`, `F5_TIMEZONE` (implicit Europe/Bucharest).
+- Snapshot real Inside Airbnb Atena, 22 septembrie 2026, verificat: `app/adapters/inside_airbnb/local_data/listings.csv.gz`; opt rânduri reale reduse la coloanele necesare sunt versionate în `fixtures/`. Detalii de configurare și licență în README-ul adaptorului.
 
 ## Decizii
 - Fără LLM în schelet — prețul trebuie să vină din date și din reguli, deci e calculat în cod.
-- Regulile de preț sunt funcții pure (`is_comparable`, `cheapest_comparable`, `floor_price`, `propose_price`) — ușor de testat și de schimbat.
-- Dacă PMS-ul nu poate seta disponibilitatea, se continuă cu prețul — la un PMS real nopțile se redeschid singure la anulare.
+- Regulile sunt funcții pure în `pricing.py`: comparabilitate, preț, plafon, distribuție pe nopți și validarea snapshotului. Funcțiile inițiale rămân importabile și din `relisting.py`.
+- Nu scriem disponibilitatea: la aprobare calendarul trebuie să confirme deja nopțile libere. Citirea nesuportată duce la fallback manual înainte de cererea de aprobare; nu inventăm tarife originale.
+- Rotunjire monetară cu Decimal: la cent pentru tarife, în sus pentru praguri. Nu sunt acceptate sume negative/nefinite, nopți duplicate, monede diferite sau snapshoturi incomplete.
+- Blocare locală pe proprietate și verificarea stării finale împiedică propuneri/scrieri repetate în procesul unic. Migrarea celor două coloane F5 este aditivă; propunerile vechi fără snapshot nu pot scrie tarife.
+- Scrierile pe nopți nu sunt atomice în port; eșecul raportează progresul parțial, fără rollback/retry automat. Nu modificăm contractul comun.
 - `dedupe_key` pe rezervare — o anulare produce o singură propunere, chiar dacă evenimentul ar sosi de două ori.
 
 ## Plan faza 1
@@ -31,19 +36,19 @@ La o anulare de ultim moment, caută în datele de piață cel mai ieftin anunț
 
 **De implementat, în ordine:**
 
-1. [ ] **Preț pe noapte.** Propunerea păstrează raportul dintre nopți din calendar (weekend mai scump) în loc de un preț unic; pragul hostului se aplică fiecărei nopți.
-2. [ ] **Verificare înainte de aplicare.** La aprobare, citește calendarul; dacă nopțile au fost rezervate între timp, nu scrie nimic și anunță hostul.
-3. [ ] **Expirarea propunerilor.** O propunere neaprobată până la check-in devine `expired`; aprobarea ei ulterioară nu mai schimbă calendarul.
-4. [ ] **Plafon la prețul obișnuit.** Prețul propus nu depășește prețul obișnuit al nopții (o relistare de ultim moment nu scumpește).
-5. [ ] **Inside Airbnb:** maparea facilităților completată pe un fișier real; creditul sursei rămâne vizibil.
-6. [ ] **Scenariul de demo** (`docs/DEMO.md`): pașii exacți prin cele cinci fluxuri, ce se arată la fiecare, și varianta mock ca rezervă.
+1. [x] **Preț pe noapte.** Propunerea păstrează raportul dintre nopți din calendar (weekend mai scump) în loc de un preț unic; pragul hostului se aplică fiecărei nopți.
+2. [x] **Verificare înainte de aplicare.** La aprobare, citește calendarul; dacă nopțile au fost rezervate între timp, nu scrie nimic și anunță hostul.
+3. [x] **Expirarea propunerilor.** O propunere neaprobată până la check-in devine `expired`; aprobarea ei ulterioară nu mai schimbă calendarul.
+4. [x] **Plafon la prețul obișnuit.** Prețul propus nu depășește prețul obișnuit al nopții (o relistare de ultim moment nu scumpește).
+5. [x] **Inside Airbnb:** maparea facilităților completată pe un fișier real; creditul sursei rămâne vizibil.
+6. [x] **Scenariul de demo** (`docs/DEMO.md`): pașii exacți prin cele cinci fluxuri, ce se arată la fiecare, și varianta mock ca rezervă.
 
 **Criterii de acceptare:**
 - vinerea și sâmbăta rămân mai scumpe decât nopțile din timpul săptămânii, iar nicio noapte nu coboară sub prag și nu urcă peste prețul ei obișnuit;
 - o aprobare dată după ce nopțile s-au ocupat nu modifică calendarul;
 - regulile noi sunt funcții pure, cu teste.
 
-**De verificat manual:** un `listings.csv.gz` real de la Inside Airbnb pentru orașul ales (`MARKET_PROVIDER=inside_airbnb`). Scrierea prețului într-un PMS real depinde de adaptoarele din F1.
+**Verificat:** importul arhivei reale Atena și maparea pe extrasul versionat, plus fluxurile mock prin API/UI. Scrierea prețului într-un PMS real depinde de adaptoarele din F1 și rămâne de verificat cu credențiale reale.
 
 ## Reguli pentru implementare (one-shot)
 
@@ -69,10 +74,12 @@ Aceste reguli sunt pentru Claude Code. Scopul: implementarea să iasă bine din 
 ## Probleme deschise / TODO
 - Scrierea în calendarul Hospitable e stub; la OwnerRez doar prețul (`spotrates`), netestat.
 - Datele de piață reale (Inside Airbnb) sunt snapshot-uri trimestriale dintr-un oraș configurat, nu prețuri live pentru orașul proprietății.
-- Prețul propus e același pentru toate nopțile; nu ține cont de weekend sau de sezon.
-- Nu se verifică dacă nopțile au fost între timp rezervate din nou înainte de aplicare.
-- O propunere neaprobată nu expiră.
-- Dacă cel mai ieftin comparabil e mai scump decât prețul nostru de bază, propunerea poate fi peste prețul obișnuit.
+- Portul comun nu oferă verificare și scriere atomică (CAS) sau tranzacții între nopți; nu putem exclude o rezervare externă apărută după recitire. Suportul ar necesita un PR separat în contractele comune.
+- Expirarea este evaluată la acces/decizie, fără worker; inboxul comun nu are stare `expired`, dar propunerea F5 are și blochează orice decizie târzie.
+- Verificarea UI a fost automatizată cu Streamlit AppTest; aspectul vizual în browser și conexiunile PMS de producție rămân de verificat manual.
+- Raporturile dintre nopți se păstrează în limita rotunjirii la cent; pragul rotunjit în sus are prioritate.
+
+Implementarea și rezultatele verificărilor sunt documentate în `IMPLEMENTATION_SUMMARY.md`; scenariile sunt în `docs/DEMO.md`.
 
 ## Note pentru Claude
 - Limitele de bani se impun în cod, nu într-un prompt. Orice regulă nouă de preț devine o funcție pură cu test.

@@ -8,30 +8,45 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import SettingsConfigDict
 
 from app.core.clock import utcnow
 from app.core.contracts.events import ApprovalDecided, BookingCancelled
-from app.core.contracts.models import ApprovalOption, Comparable, ComparableQuery, Property
+from app.core.contracts.models import ApprovalOption, CalendarDay, ComparableQuery
+from app.core.db import from_json, to_json
 from app.core.feature_context import FeatureContext, FeatureSettings
 from app.core.ids import new_id
-from app.ports.pms import CapabilityNotSupported
+from app.features.f5_relisting.pricing import (
+    NightlyPrice, cap_price, cheapest_comparable, distribute_prices, floor_price,
+    is_comparable, propose_price, validate_calendar,
+)
 
 logger = logging.getLogger("staypilot.f5")
 
 APPROVAL_KIND = "relist_price"
-ProposalStatus = Literal["awaiting_approval", "applied", "rejected", "failed", "no_comparable"]
+ProposalStatus = Literal[
+    "awaiting_approval", "applied", "rejected", "failed", "no_comparable", "conflict", "expired"
+]
 
 
 class F5Settings(FeatureSettings):
     model_config = SettingsConfigDict(env_prefix="F5_", extra="ignore", env_ignore_empty=True)
 
-    undercut_pct: float = 3.0  # cu cât coborâm sub cel mai ieftin comparabil
-    market_timeout_s: float = 20.0
+    undercut_pct: float = Field(default=3.0, ge=0, lt=100, allow_inf_nan=False)
+    market_timeout_s: float = Field(default=20.0, gt=0, allow_inf_nan=False)
+    calendar_timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    timezone: str = "Europe/Bucharest"
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        ZoneInfo(value)
+        return value
 
 
 class RelistProposal(BaseModel):
@@ -46,6 +61,8 @@ class RelistProposal(BaseModel):
     comparable_title: str | None = None
     comparable_price: float | None = None
     proposed_price: float | None = None
+    nightly_prices: list[NightlyPrice] = Field(default_factory=list)
+    expires_at: datetime | None = None
     currency: str = "EUR"
     market_source: str | None = None
     market_attribution: str | None = None
@@ -56,33 +73,6 @@ class RelistProposal(BaseModel):
     updated_at: datetime
 
 
-# --- Regulile de business, funcții pure ----------------------------------------------
-
-
-def is_comparable(candidate: Comparable, prop: Property) -> bool:
-    """Comparabil = aceleași facilități (cel puțin), același număr de dormitoare, loc suficient."""
-    return (
-        set(prop.amenities) <= set(candidate.amenities)
-        and candidate.bedrooms == prop.bedrooms
-        and candidate.max_guests >= prop.max_guests
-    )
-
-
-def cheapest_comparable(candidates: list[Comparable], prop: Property) -> Comparable | None:
-    matching = [c for c in candidates if is_comparable(c, prop) and c.currency == prop.currency]
-    return min(matching, key=lambda c: (c.nightly_price, c.ref)) if matching else None
-
-
-def floor_price(base_price: float, max_discount_pct: float) -> float:
-    return round(base_price * (1 - max_discount_pct / 100), 2)
-
-
-def propose_price(comparable_price: float, undercut_pct: float, floor: float) -> tuple[float, bool]:
-    """Puțin sub cel mai ieftin comparabil, dar niciodată sub pragul hostului. -> (preț, limitat)."""
-    price = round(comparable_price * (1 - undercut_pct / 100), 2)
-    return (floor, True) if price < floor else (price, False)
-
-
 # --- Serviciul -----------------------------------------------------------------------
 
 
@@ -90,14 +80,34 @@ class Relisting:
     def __init__(self, ctx: FeatureContext) -> None:
         self._ctx = ctx
         self._settings = ctx.load_settings(F5Settings)
+        self._timezone = ZoneInfo(self._settings.timezone)
+        self._locks: dict[str, asyncio.Lock] = {}
+        # Migrare aditivă locală: păstrăm propunerile și restul lumii existente.
+        columns = {r["name"] for r in ctx.db.query("PRAGMA table_info(f5_relist_proposals)")}
+        for name, definition in (
+            ("nightly_prices", "TEXT NOT NULL DEFAULT '[]'"), ("expires_at", "TEXT")
+        ):
+            if name not in columns:
+                ctx.db.execute(f"ALTER TABLE f5_relist_proposals ADD COLUMN {name} {definition}")
+
+    def _now(self) -> datetime:
+        # FIXED_TODAY îngheață data demo, dar ora locală continuă să avanseze.
+        local = self._ctx.clock.now().astimezone(self._timezone)
+        return datetime.combine(self._ctx.clock.today(), local.time(), self._timezone)
 
     # --- Anulare -> propunere ------------------------------------------------------
 
     async def on_booking_cancelled(self, event: BookingCancelled) -> None:
+        async with self._locks.setdefault(event.property_id, asyncio.Lock()):
+            await self._propose(event)
+
+    async def _propose(self, event: BookingCancelled) -> None:
         ctx = self._ctx
+        if ctx.db.query_one("SELECT id FROM f5_relist_proposals WHERE booking_id = ?", (event.booking_id,)):
+            return
         prop = ctx.world.get_property(event.property_id)
         booking = ctx.world.get_booking(event.booking_id)
-        if prop is None or booking is None:
+        if prop is None or booking is None or booking.property_id != prop.id or booking.status != "cancelled":
             return
         rules = ctx.world.host_rules()
         today = ctx.clock.today()
@@ -117,7 +127,6 @@ class Relisting:
             )
             return
 
-        floor = floor_price(prop.base_price, rules.max_relist_discount_pct)
         proposal = RelistProposal(
             id=new_id("rel"),
             booking_id=booking.id,
@@ -125,7 +134,10 @@ class Relisting:
             start_date=start,
             end_date=end,
             base_price=prop.base_price,
-            floor_price=floor,
+            floor_price=0,
+            expires_at=datetime.combine(
+                event.check_in, time.fromisoformat(rules.check_in_time), self._timezone
+            ),
             currency=prop.currency,
             market_source=ctx.market.name,
             market_attribution=ctx.market.attribution,
@@ -133,6 +145,23 @@ class Relisting:
             created_at=utcnow(),
             updated_at=utcnow(),
         )
+        if self._now() >= proposal.expires_at:
+            self._insert(proposal.model_copy(update={"status": "expired"}))
+            self._notify_expired(proposal)
+            return
+
+        try:
+            floor = floor_price(prop.base_price, rules.max_relist_discount_pct)
+            days = await self._read_calendar(proposal)
+            if not all(d.available for d in days):
+                self._insert(proposal)
+                self._stop(proposal, "conflict", "Some nights are already booked or blocked.")
+                return
+        except Exception as exc:
+            self._insert(proposal)
+            self._stop(proposal, "failed", f"Calendar or pricing data unavailable: {exc}")
+            return
+        proposal = proposal.model_copy(update={"floor_price": floor})
 
         try:
             candidates = await asyncio.wait_for(
@@ -185,6 +214,11 @@ class Relisting:
             return
 
         price, clamped = propose_price(comparable.nightly_price, self._settings.undercut_pct, floor)
+        price = cap_price(price, prop.base_price)
+        nightly = distribute_prices(
+            days, prop.base_price, comparable.nightly_price,
+            self._settings.undercut_pct, rules.max_relist_discount_pct,
+        )
         note = (
             f"Limited by your maximum relisting discount of {rules.max_relist_discount_pct:g}%."
             if clamped
@@ -196,26 +230,35 @@ class Relisting:
                 "comparable_title": comparable.title,
                 "comparable_price": comparable.nightly_price,
                 "proposed_price": price,
+                "nightly_prices": nightly,
                 "note": note,
             }
         )
         self._insert(proposal)
+        if self._expire(proposal):
+            return
+
+        price_label = self._price_label(proposal)
 
         summary = [
             f"{booking.guest_name} cancelled {start} to {end}, {days_until} day(s) before check-in.",
             f"Cheapest comparable listing with the same amenities: {comparable.title} at "
             f"{comparable.nightly_price:g} {comparable.currency}/night (source: {comparable.source}).",
-            f"Proposed price: {price:g} {prop.currency}/night. Your regular price is "
-            f"{prop.base_price:g}; your floor is {floor:g}.",
+            f"Nightly prices: {price_label}. Each night stays within its host floor and regular price.",
+            *[f"{n.day}: {n.original_price:g} → {n.proposed_price:g} {prop.currency} "
+              f"(floor {n.floor_price:g})." for n in nightly],
+            f"Expires at check-in: {proposal.expires_at.isoformat()}.",
         ]
+        if proposal.market_attribution:
+            summary.append(proposal.market_attribution)
         if note:
             summary.append(note)
         approval = await ctx.approvals.request(
             feature=ctx.feature,
             kind=APPROVAL_KIND,
-            title=f"Relist {prop.name} at {price:g} {prop.currency}/night?",
+            title=f"Relist {prop.name} at {price_label}?",
             summary="\n".join(summary),
-            options=[ApprovalOption(key="approve", label=f"Relist at {price:g} {prop.currency}")],
+            options=[ApprovalOption(key="approve", label=f"Relist at {price_label}")],
             payload={"proposal_id": proposal.id},
             booking_id=booking.id,
             property_id=prop.id,
@@ -226,9 +269,17 @@ class Relisting:
     # --- Decizie -> calendar -------------------------------------------------------
 
     async def on_decision(self, event: ApprovalDecided) -> None:
+        proposal = self.get(str(event.payload.get("proposal_id")))
+        if proposal is None:
+            return
+        async with self._locks.setdefault(proposal.property_id, asyncio.Lock()):
+            await self._apply_decision(event)
+
+    async def _apply_decision(self, event: ApprovalDecided) -> None:
         ctx = self._ctx
         proposal = self.get(str(event.payload.get("proposal_id")))
-        if proposal is None or proposal.proposed_price is None:
+        if (proposal is None or proposal.status != "awaiting_approval"
+                or proposal.approval_id != event.approval_id):
             return
         prop = ctx.world.get_property(proposal.property_id)
         name = prop.name if prop else proposal.property_id
@@ -244,47 +295,116 @@ class Relisting:
             )
             return
 
-        problems: list[str] = []
+        if not proposal.nightly_prices or proposal.expires_at is None:
+            self._stop(proposal, "failed", "This older proposal has no nightly snapshot. Relist manually.")
+            return
         try:
-            await ctx.calendar.set_availability(
-                proposal.property_id, proposal.start_date, proposal.end_date, True
-            )
-        except CapabilityNotSupported:
-            # La un PMS real, nopțile se redeschid singure când rezervarea e anulată.
-            problems.append("availability could not be set through the PMS; check it is open")
+            days = await self._read_calendar(proposal)
         except Exception as exc:
-            problems.append(f"availability update failed: {exc}")
-        try:
-            await ctx.calendar.set_price(
-                proposal.property_id, proposal.start_date, proposal.end_date, proposal.proposed_price
-            )
-        except Exception as exc:
-            problems.append(f"price update failed: {exc}")
-            self._update(proposal.id, status="failed", note="; ".join(problems))
-            ctx.notify(
-                f"Relisting of {name} could not be applied",
-                f"Set {proposal.proposed_price:g} {proposal.currency}/night for {span} manually "
-                f"in your PMS. Details: {'; '.join(problems)}.",
-                level="warning",
-                property_id=proposal.property_id,
-                booking_id=proposal.booking_id,
-            )
+            self._stop(proposal, "failed", f"Calendar verification failed: {exc}. No changes were made.")
+            return
+        if self._expire(proposal):
+            return
+        if any(not day.available for day in days):
+            self._stop(proposal, "conflict", "Some nights were booked or blocked after this proposal. No changes were made.")
+            return
+        if ([day.day for day in days] != [n.day for n in proposal.nightly_prices]
+                or any(day.price != n.original_price for day, n in zip(days, proposal.nightly_prices))):
+            self._stop(proposal, "conflict", "Regular prices changed after this proposal. Review prices manually. No changes were made.")
             return
 
-        self._update(proposal.id, status="applied", note="; ".join(problems) or proposal.note)
+        applied: list[str] = []
+        try:
+            # Nopțile sunt deja libere; nu redeschidem disponibilitatea redundant.
+            for night in proposal.nightly_prices:
+                if self._expire(proposal):
+                    return
+                await asyncio.wait_for(
+                    ctx.calendar.set_price(
+                        proposal.property_id, night.day, night.day + timedelta(days=1), night.proposed_price
+                    ), timeout=self._settings.calendar_timeout_s,
+                )
+                applied.append(str(night.day))
+        except Exception as exc:
+            # Portul nu oferă tranzacții; un rollback ar putea suprascrie o rezervare nouă.
+            self._stop(proposal, "failed", (
+                f"Price update failed: {type(exc).__name__}: {exc}. "
+                f"Confirmed updated nights: {', '.join(applied) or 'none'}. "
+                "The failing call may have completed remotely; verify all nights in your PMS."
+            ))
+            return
+        self._update(proposal.id, status="applied")
         ctx.notify(
-            f"{name} relisted at {proposal.proposed_price:g} {proposal.currency}/night",
-            f"Nights {span} are open at the new price."
-            + (f" Note: {'; '.join(problems)}." if problems else ""),
+            f"{name} relisted at {self._price_label(proposal)}",
+            "Applied approved nightly prices: " + self._schedule(proposal),
             level="success",
             property_id=proposal.property_id,
             booking_id=proposal.booking_id,
         )
 
+    async def _read_calendar(self, proposal: RelistProposal) -> list[CalendarDay]:
+        try:
+            days = await asyncio.wait_for(
+                self._ctx.calendar.get_days(proposal.property_id, proposal.start_date, proposal.end_date),
+                timeout=self._settings.calendar_timeout_s,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(f"Calendar timed out after {self._settings.calendar_timeout_s:g}s") from exc
+        return validate_calendar(
+            days, proposal.property_id, proposal.start_date, proposal.end_date, proposal.currency
+        )
+
+    @staticmethod
+    def _price_label(proposal: RelistProposal) -> str:
+        prices = [n.proposed_price for n in proposal.nightly_prices]
+        if not prices:
+            return "unavailable"
+        low, high = min(prices), max(prices)
+        amount = f"{low:g}" if low == high else f"{low:g}–{high:g}"
+        return f"{amount} {proposal.currency}/night"
+
+    @staticmethod
+    def _schedule(proposal: RelistProposal) -> str:
+        return "; ".join(f"{n.day}: {n.proposed_price:g} {proposal.currency}" for n in proposal.nightly_prices)
+
+    def _stop(self, proposal: RelistProposal, status: ProposalStatus, problem: str) -> None:
+        self._update(proposal.id, status=status, note=problem)
+        prop = self._ctx.world.get_property(proposal.property_id)
+        name = prop.name if prop else proposal.property_id
+        self._ctx.notify(
+            f"Relisting of {name} could not be applied" if status == "failed" else f"Relisting of {name}: calendar conflict",
+            problem + " Review and relist manually in your PMS. " + self._schedule(proposal),
+            level="warning", property_id=proposal.property_id, booking_id=proposal.booking_id,
+        )
+
+    def _notify_expired(self, proposal: RelistProposal) -> None:
+        self._ctx.notify(
+            "Relisting proposal expired",
+            "Check-in has been reached. This proposal can no longer change the calendar. "
+            "Review any previously applied nightly prices in your PMS.",
+            level="warning", property_id=proposal.property_id, booking_id=proposal.booking_id,
+        )
+
+    def _expire(self, proposal: RelistProposal) -> bool:
+        if proposal.status != "awaiting_approval":
+            return proposal.status == "expired"
+        deadline = proposal.expires_at or datetime.combine(proposal.start_date, time.min, self._timezone)
+        if self._now() < deadline:
+            return False
+        changed = self._ctx.db.execute(
+            "UPDATE f5_relist_proposals SET status = 'expired', note = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'awaiting_approval'",
+            ("Check-in reached; approval can no longer change the calendar.", utcnow().isoformat(), proposal.id),
+        )
+        if changed.rowcount:
+            self._notify_expired(proposal)
+        return True
+
     # --- Persistență ---------------------------------------------------------------
 
     def _insert(self, proposal: RelistProposal) -> None:
         data = proposal.model_dump(mode="json")
+        data["nightly_prices"] = to_json(data["nightly_prices"])
         columns = ", ".join(data)
         marks = ", ".join("?" for _ in data)
         self._ctx.db.execute(
@@ -303,11 +423,20 @@ class Relisting:
         row = self._ctx.db.query_one(
             "SELECT * FROM f5_relist_proposals WHERE id = ?", (proposal_id,)
         )
-        return RelistProposal(**row) if row else None
+        if row is None:
+            return None
+        proposal = self._from_row(row)
+        if self._expire(proposal):
+            return proposal.model_copy(update={"status": "expired", "note": "Check-in reached; approval can no longer change the calendar."})
+        return proposal
 
     def list(self, limit: int = 50) -> list[RelistProposal]:
         rows = self._ctx.db.query(
             "SELECT * FROM f5_relist_proposals ORDER BY created_at DESC, rowid DESC LIMIT ?",
             (limit,),
         )
-        return [RelistProposal(**row) for row in rows]
+        return [proposal for row in rows if (proposal := self.get(row["id"])) is not None]
+
+    @staticmethod
+    def _from_row(row: dict[str, Any]) -> RelistProposal:
+        return RelistProposal(**{**row, "nightly_prices": from_json(row.get("nightly_prices"), [])})

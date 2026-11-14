@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import csv
 import gzip
-import io
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -44,16 +44,16 @@ CREATE INDEX IF NOT EXISTS idx_market_listings_size ON market_listings (bedrooms
 """
 
 # Facilitățile din CSV sunt text liber; le aducem la vocabularul nostru.
-AMENITY_KEYWORDS = {
-    "wifi": "wifi",
-    "kitchen": "kitchen",
-    "air conditioning": "air_conditioning",
-    "washer": "washer",
-    "self check-in": "self_check_in",
-    "balcony": "balcony",
-    "parking": "parking",
-    "heating": "heating",
-    "fireplace": "fireplace",
+AMENITY_PATTERNS = {
+    "wifi": r"^(?:fast |pocket )?wi[ -]?fi\b",
+    "kitchen": r"^kitchen$",
+    "air_conditioning": r"^(?:(?:central|portable|window|split[ -]type) )?air conditioning\b",
+    "washer": r"^(?:(?:free|paid) )?washer\b",
+    "self_check_in": r"^(?:self check[ -]in|lockbox|keypad|smart lock)$",
+    "balcony": r"^(?:(?:private|shared) )?(?:patio or balcony|balcony)\b",
+    "parking": r"^(?:(?:free|paid) )?(?:(?:street|driveway|valet) )?parking\b",
+    "heating": r"^(?:(?:central|radiant|portable) )?heating\b",
+    "fireplace": r"^(?:(?:indoor|outdoor) )?fireplace(?:$|:)",
 }
 
 
@@ -61,21 +61,25 @@ def normalize_amenities(raw: str) -> list[str]:
     try:
         names = json.loads(raw) if raw else []
     except json.JSONDecodeError:
-        names = [part.strip(' "') for part in raw.strip("{}[]").split(",")]
+        names = next(csv.reader([raw.strip("{}[]")], skipinitialspace=True)) if raw else []
+    if not isinstance(names, list):
+        return []  # un scalar sau un obiect JSON nu descrie o listă de facilități
     found: set[str] = set()
     for name in names:
-        lowered = str(name).lower()
-        matched = [ours for keyword, ours in AMENITY_KEYWORDS.items() if keyword in lowered]
+        if not isinstance(name, str):
+            continue
+        lowered = name.strip().lower().replace("–", "-").replace("‑", "-")
+        matched = [ours for ours, pattern in AMENITY_PATTERNS.items() if re.search(pattern, lowered)]
         found.update(matched or [re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")])
     return sorted(item for item in found if item)
 
 
 def parse_price(raw: str) -> float | None:
-    cleaned = re.sub(r"[^0-9.]", "", raw or "")
-    try:
-        return float(cleaned) if cleaned else None
-    except ValueError:
+    match = re.fullmatch(r"\s*(?:[A-Z]{3}\s*|[$€£])?(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*", raw or "")
+    if match is None:
         return None
+    price = float(match[1].replace(",", ""))
+    return price if math.isfinite(price) and price > 0 else None
 
 
 class InsideAirbnbMarketAdapter:
@@ -98,28 +102,44 @@ class InsideAirbnbMarketAdapter:
 
     def import_listings(self) -> int:
         try:
-            raw = self._csv_path.read_bytes()
-        except OSError as exc:
-            raise MarketDataError(f"cannot read {self._csv_path}: {exc}") from exc
-        if self._csv_path.suffix == ".gz":
-            raw = gzip.decompress(raw)
-        reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
+            opener = gzip.open if self._csv_path.suffix.lower() == ".gz" else open
+            with opener(self._csv_path, "rt", encoding="utf-8-sig", newline="") as stream:
+                reader = csv.DictReader(stream)
+                required = {"id", "bedrooms", "accommodates", "amenities", "price"}
+                if not required <= set(reader.fieldnames or []):
+                    raise MarketDataError("Detailed listings CSV required: missing " + ", ".join(sorted(required - set(reader.fieldnames or []))))
+                return self._import_records(reader)
+        except (OSError, EOFError, UnicodeError, csv.Error) as exc:
+            raise MarketDataError(f"Cannot read Inside Airbnb dataset {self._csv_path}: {exc}") from exc
+
+    def _import_records(self, reader: csv.DictReader) -> int:
         rows: list[tuple[Any, ...]] = []
         for record in reader:
             price = parse_price(record.get("price", ""))
             if price is None or not record.get("id"):
                 continue  # anunțurile fără preț nu ajută la comparație
+            try:
+                bedrooms = float(record.get("bedrooms") or 0)
+                accommodates = float(record.get("accommodates") or 1)
+                if not (math.isfinite(bedrooms) and math.isfinite(accommodates)
+                        and bedrooms.is_integer() and accommodates.is_integer()
+                        and bedrooms >= 0 and accommodates > 0):
+                    continue
+            except ValueError:
+                continue
             rows.append(
                 (
                     str(record["id"]),
                     record.get("name") or "Listing",
-                    int(float(record.get("bedrooms") or 0)),
-                    int(float(record.get("accommodates") or 1)),
+                    int(bedrooms),
+                    int(accommodates),
                     to_json(normalize_amenities(record.get("amenities", ""))),
                     price,
                     record.get("listing_url") or None,
                 )
             )
+        if not rows:
+            raise MarketDataError("Inside Airbnb dataset has no usable listings with positive prices.")
         with self._db.transaction():
             self._db.execute("DELETE FROM market_listings")
             for row in rows:
@@ -134,9 +154,15 @@ class InsideAirbnbMarketAdapter:
         """Anunțurile cu același număr de dormitoare și loc suficient, cele mai ieftine întâi."""
         rows = self._db.query(
             "SELECT * FROM market_listings WHERE bedrooms = ? AND max_guests >= ? "
-            "ORDER BY nightly_price LIMIT ?",
-            (query.bedrooms, query.max_guests, MAX_RESULTS),
+            "ORDER BY nightly_price, ref",
+            (query.bedrooms, query.max_guests),
         )
+        # Păstrăm candidații de depanare și includem comparabilele înaintea plafonului.
+        # Altfel 300 de camere ieftine fără facilități pot ascunde singurul comparabil.
+        if len(rows) > MAX_RESULTS:
+            required = set(query.amenities)
+            matching = [row for row in rows if required <= set(from_json(row["amenities"], []))]
+            rows = matching[:MAX_RESULTS] if matching else rows[:MAX_RESULTS]
         return [
             Comparable(
                 ref=row["ref"],

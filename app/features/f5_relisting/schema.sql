@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS f5_relist_proposals (
     comparable_title   TEXT,
     comparable_price   REAL,
     proposed_price     REAL,
+    nightly_prices     TEXT NOT NULL DEFAULT '[]',
+    expires_at         TEXT,
     currency           TEXT NOT NULL DEFAULT 'EUR',
     market_source      TEXT,
     market_attribution TEXT,
