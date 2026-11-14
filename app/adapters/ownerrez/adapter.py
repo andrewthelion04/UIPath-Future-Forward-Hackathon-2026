@@ -8,19 +8,29 @@ Verificat în documentația oficială (noiembrie 2026):
   `next_page_url`; `POST /v2/messages` cu `{thread_id, body}`; `PATCH /v2/spotrates`;
 - mesageria cere token OAuth: cu personal access token API-ul răspunde 402;
 - webhook: `{id, user_id, action, entity_type, entity_id, categories, entity}`, mesajele au
-  `entity_type = "thread_message"`.
+  `entity_type = "thread_message"`;
+- `GET /v2/bookings` include toate tipurile care țin nopțile ocupate; `from` filtrează
+  plecarea, `to` sosirea (inclusiv); `GET /v2/spotrates` expune override-uri rare pe noapte.
+  Surse: https://api.ownerrez.com/openapi/v2.json și
+  https://www.ownerrez.com/support/articles/api-availability-sync
 
 NECONFIRMAT (de verificat în Stage):
 - numele câmpului de ID (`id`) și cheia listei de proprietăți (`items`);
 - `GET /v2/bookings/{id}` pentru a afla `thread_ids` înainte de trimiterea unui mesaj;
 - valorile lui `from_role` din webhook-ul de mesaje (presupus: conține „guest” pentru oaspete);
-- citirea calendarului și scrierea disponibilității: rămân stub. Scrierea prețului folosește
-  `PATCH /v2/spotrates`, documentat, dar netestat.
+- calendarul folosește rezervări/blocări și override-uri `GET /v2/spotrates`; nopțile fără
+  override folosesc `base_price` al proprietății sau 0. Nu calculează regulile sezoniere;
+- dacă citirea metadatelor eșuează, moneda și prețul de bază vin din ultima listare
+  reușită; fără o listare reușită anterioară, fallback-ul este EUR și 0;
+- disponibilitatea rămâne stub: API-ul poate crea blocări, dar nu le poate anula/șterge,
+  deci nu poate implementa simetric `available=True`. Vezi documentația oficială:
+  https://www.ownerrez.com/support/articles/api-quote-bookings
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any
 
@@ -67,6 +77,17 @@ def _status(value: Any) -> BookingStatus:
     return BookingStatus.CONFIRMED
 
 
+def _price(value: Any) -> float | None:
+    """Prețurile absente sau invalide nu trebuie să ajungă în calendar."""
+    if isinstance(value, bool):
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
 class OwnerRezAdapter:
     provider = PROVIDER
 
@@ -95,9 +116,11 @@ class OwnerRezAdapter:
             list_reservations=True,
             send_messages=bool(access_token),  # mesageria nu merge cu personal access token
             receive_webhooks=bool(access_token),
+            read_calendar=True,
             write_prices=True,
         )
         self._ids = ids
+        self._property_pricing: dict[str, tuple[str, float]] = {}
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers=headers,
@@ -132,6 +155,8 @@ class OwnerRezAdapter:
             # `next_page_url` conține deja toți parametrii paginii următoare.
             url = body.get("next_page_url") if isinstance(body, dict) else None
             query = None
+        if url is not None:
+            raise PmsError(f"OwnerRez pagination exceeded {MAX_PAGES} pages for {path}")
         return items
 
     def _external(self, entity_type: str, internal_id: str) -> str:
@@ -159,9 +184,13 @@ class OwnerRezAdapter:
                     bedrooms=int(item.get("bedrooms") or 1),
                     max_guests=int(item.get("max_guests") or 2),
                     amenities=[],  # API-ul de proprietăți nu expune facilitățile
+                    base_price=_price(item.get("base_price")) or 0.0,
                     currency=str(item.get("currency_code") or "EUR"),
                 )
             )
+        self._property_pricing = {
+            prop.external_id: (prop.currency, prop.base_price) for prop in properties
+        }
         return properties
 
     async def list_reservations(self) -> list[PmsReservation]:
@@ -211,6 +240,13 @@ class OwnerRezAdapter:
         await self._request("POST", "/v2/messages", json={"thread_id": thread_ids[0], "body": body})
         return SentMessage()
 
+    def is_reservation_webhook(self, payload: dict[str, Any]) -> bool:
+        return (
+            self.capabilities.receive_webhooks
+            and payload.get("entity_type") in ("booking", "reservation")
+            and payload.get("action") in ("entity_create", "entity_update", "entity_delete")
+        )
+
     def parse_webhook(self, payload: dict[str, Any]) -> InboundMessage | None:
         if payload.get("entity_type") != MESSAGE_ENTITY or payload.get("action") != "entity_create":
             return None
@@ -234,7 +270,77 @@ class OwnerRezAdapter:
     # --- CalendarPort --------------------------------------------------------------
 
     async def get_days(self, property_id: str, start: date, end: date) -> list[CalendarDay]:
-        raise CapabilityNotSupported("reading the OwnerRez calendar is not implemented yet")
+        external_id = self._external(PROPERTY, property_id)
+        if end < start:
+            raise ValueError("calendar end must not be before start")
+        if end == start:
+            return []
+
+        # OwnerRez folosește limite inclusive; contractul nostru exclude noaptea `end`.
+        params = {
+            "property_ids": external_id,
+            "from": start.isoformat(),
+            "to": (end - timedelta(days=1)).isoformat(),
+        }
+        bookings = await self._pages("/v2/bookings", params)
+        occupied: set[date] = set()
+        for item in bookings:
+            if str(item.get("property_id", external_id)) != external_id:
+                continue
+            if _status(item.get("status")) == BookingStatus.CANCELLED:
+                continue
+            if item.get("type", "booking") not in (
+                "booking", "block", "owner", "quote_hold", "linked_availability"
+            ):
+                continue
+            try:
+                arrival = date.fromisoformat(str(item["arrival"])[:10])
+                departure = date.fromisoformat(str(item["departure"])[:10])
+                if departure <= arrival:
+                    raise ValueError("departure must follow arrival")
+            except (KeyError, TypeError, ValueError) as exc:
+                # Nu declarăm o noapte liberă dacă datele ocupării sunt incomplete.
+                raise PmsError("OwnerRez returned a calendar entry with invalid dates") from exc
+            day = max(start, arrival)
+            while day < min(end, departure):
+                occupied.add(day)
+                day += timedelta(days=1)
+
+        try:
+            await self.list_properties()
+        except PmsError:
+            logger.warning(
+                "OwnerRez property pricing unavailable; using cached pricing or EUR/zero defaults",
+                exc_info=True,
+            )
+        currency, base_price = self._property_pricing.get(external_id, ("EUR", 0.0))
+
+        rates: dict[date, float] = {}
+        try:
+            for item in await self._pages("/v2/spotrates", params):
+                if str(item.get("property_id", external_id)) != external_id:
+                    continue
+                try:
+                    day = date.fromisoformat(str(item["date"])[:10])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                price = _price(item.get("amount"))
+                if start <= day < end and price is not None:
+                    rates[day] = price
+        except PmsError:
+            logger.warning("OwnerRez spot rates unavailable; using the property base price", exc_info=True)
+
+        return [
+            CalendarDay(
+                property_id=property_id,
+                day=day,
+                available=day not in occupied,
+                price=rates.get(day, base_price),
+                currency=currency,
+            )
+            for offset in range((end - start).days)
+            for day in (start + timedelta(days=offset),)
+        ]
 
     async def set_price(self, property_id: str, start: date, end: date, price: float) -> None:
         external_id = int(self._external(PROPERTY, property_id))
@@ -249,7 +355,12 @@ class OwnerRezAdapter:
     async def set_availability(
         self, property_id: str, start: date, end: date, available: bool
     ) -> None:
-        raise CapabilityNotSupported("writing OwnerRez availability is not implemented yet")
+        # POST type=block există, dar API-ul nu poate anula/șterge o blocare. Nu oferim
+        # o capabilitate care poate închide nopți fără să le poată redeschide în siguranță.
+        raise CapabilityNotSupported(
+            "OwnerRez availability writes are disabled: blocks cannot be cancelled or deleted "
+            "through the API; manage availability in OwnerRez"
+        )
 
     async def aclose(self) -> None:
         await self._http.aclose()

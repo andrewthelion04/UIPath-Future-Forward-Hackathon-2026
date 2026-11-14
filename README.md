@@ -112,6 +112,8 @@ cloudflared tunnel --url http://127.0.0.1:8000
 
 Configurează în PMS adresa `https://<adresa-tunelului>/webhooks/<provider>`, de exemplu `/webhooks/hospitable` sau `/webhooks/ownerrez`.
 
+F1 oferă și Basic Auth OwnerRez (`F1_OWNERREZ_WEBHOOK_USERNAME` + `F1_OWNERREZ_WEBHOOK_PASSWORD`) și filtrare CIDR opțională Hospitable (`F1_HOSPITABLE_WEBHOOK_ALLOW_CIDRS`). Configurarea, reprocesarea mesajelor nemapate și limitele calendarului sunt descrise în [README-ul F1](app/features/f1_pms_integration/README.md).
+
 - Endpointul răspunde mereu `200` și procesează în background. Payload-urile brute se păstrează și se văd în pagina *F1* sau la `GET /f1/webhook-log`.
 - **Atenție:** tunelul expune tot API-ul, iar API-ul nu are autentificare. Ține tunelul deschis doar cât testezi și setează `WEBHOOK_TOKEN` în `.env`; atunci webhook-urile trebuie să vină la `/webhooks/<provider>?token=<valoarea>`.
 

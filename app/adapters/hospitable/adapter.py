@@ -210,6 +210,13 @@ class HospitableAdapter:
         message_id = data.get("id") if isinstance(data, dict) else None
         return SentMessage(external_message_id=str(message_id) if message_id else None)
 
+    def is_reservation_webhook(self, payload: dict[str, Any]) -> bool:
+        return any(
+            isinstance(payload.get(key), str)
+            and payload[key].startswith(("reservation.", "booking."))
+            for key in ("action", "event", "type")
+        )
+
     def parse_webhook(self, payload: dict[str, Any]) -> InboundMessage | None:
         """Parsare permisivă: structura exactă a payload-ului nu e confirmată."""
         action = _first(payload, "action", "event", "type")
