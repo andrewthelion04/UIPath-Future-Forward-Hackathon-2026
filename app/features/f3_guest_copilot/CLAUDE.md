@@ -5,13 +5,14 @@ Răspunde la mesajele oaspeților consultând datele noastre: rezervarea, propri
 
 ## Contract
 - Ascultă: `GuestMessageReceived`, `ApprovalDecided` pentru aprobările proprii de tip `guest_request`.
-- Emite: `GuestMessageSent` (prin `ChannelGateway`), `IssueReported` cu `reported_via="guest"` (preluat de F2), `ApprovalRequested` (prin serviciul de aprobări).
+- Emite: `GuestMessageSent` (prin `ChannelGateway`), `IssueReported` cu `reported_via="guest"` (preluat de F2), `ApprovalRequested` (prin serviciul de aprobări), `GuestOfferAnswered` (răspunsul oaspetelui la o ofertă publicată de alt feature în `guest_topics`).
 - Date deținute: niciun tabel propriu. Folosește `messages` și `agent_runs` / `agent_steps` din nucleu. Promptul e în `prompts/system.md`.
 - Porturi folosite: `llm` (prin `ctx.agent`), `calendar`, `channel`.
 - Cereri de aprobare: `guest_request` cu tip și parametri validați (`early_check_in`, `late_check_out`, `extra_guests`, `pets`); la aprobare se revalidează condițiile și se trimite confirmarea canonică arătată hostului.
 
 ## Stare curentă
-- Agentul `f3_guest_copilot.reply` are uneltele: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `report_issue`, plus `finish` din buclă.
+- Întrebările pentru host sunt acum persistate în inboxul comun `host_answers`, în locul notificărilor generice de follow-up. Hostul răspunde din **Approvals / Answers**; `ChannelGateway` trimite textul exact cu sender `host`. Datele și endpointurile sunt comune, fără dependențe între feature-uri.
+- Agentul `f3_guest_copilot.reply` are uneltele: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `answer_offer`, `report_issue`, plus `finish` din buclă.
 - Întrebare informativă → citește contextul → răspunde.
 - Early check-in / late check-out → verifică noaptea relevantă → cere sau reutilizează aprobarea exactă → răspunde în funcție de status. Confirmarea cere și verificarea actuală a unei nopți libere; un calendar ocupat sau necunoscut cere intervenția manuală a hostului.
 - `get_booking_context` expune aprobările F3 ale rezervării, filtrate înainte de orice limită globală. Repetarea semantică reutilizează aceeași aprobare inclusiv după aprobare/refuz; schimbarea parametrilor sau a condițiilor relevante creează un scop nou.
@@ -22,10 +23,20 @@ Răspunde la mesajele oaspeților consultând datele noastre: rezervarea, propri
 - Limite impuse în cod (`tools.py`): cel mult 2 răspunsuri și o singură cerere de aprobare per rulare, interval de calendar de cel mult 14 nopți.
 - `send_guest_reply` verifică aprobarea, rezervarea, cererea și textul exact al confirmării. Filtrul suplimentar pentru text liber blochează formulări cunoscute de promisiune, fără a pretinde o garanție semantică pentru orice limbă sau parafrază.
 - LLM-ul mock are o politică deterministă pe cuvinte-cheie în `mock_llm.py`.
-- `scripts/eval_models.py` rulează 8 scenarii izolate, cu PMS mock chiar pentru modele OpenRouter explicite; raportează efectele, pașii, costul cunoscut și timpul în tabel/JSON/CSV.
+- `scripts/eval_models.py` rulează 14 scenarii izolate, cu PMS mock chiar pentru modele OpenRouter explicite; raportează efectele, pașii, costul cunoscut și timpul în tabel/JSON/CSV.
 - Verificat la 14 noiembrie 2026: `python manage.py test` — **390 passed**, inclusiv arhitectura și regresiile F1. Evaluator mock: **8/8** scenarii reușite. Smoke cu API și Streamlit reale pe mock: cerere repetată, aprobare livrată o singură dată, refuz animale, mesaj mixt incident + late check-out și afișarea conversațiilor/rulărilor în pagina F3.
+- **Conversația despre un incident (14 noiembrie 2026)** (`tests/test_incident_conversation.py`):
+  - `get_booking_context` întoarce `open_topics`: ce gestionează alt feature pentru acest sejur (ex. un incident), cu `facts` care pot fi spuse oaspetelui și, eventual, o ofertă în așteptare. Fără subiecte deschise, comportamentul e cel dinainte;
+  - unealta nouă `answer_offer(topic_id, choice)`: verifică în cod că oferta e a acestei rezervări și încă așteaptă un răspuns, îl înregistrează o singură dată, trimite o confirmare de primire scrisă în cod (`offer_acknowledgement`) și publică `GuestOfferAnswered`. Rezultatul îl comunică feature-ul care a făcut oferta, cu textul aprobat de host;
+  - `send_guest_reply` are `follow_up_note`: la predarea către host, notificarea spune ce vrea oaspetele;
+  - **garda pe text liber** blochează acum o formulare permisivă doar în aceeași propoziție cu subiectul unei excepții (oră, animale, persoane în plus, bani, fumat, petreceri) sau, pentru formulările ferme („confirmed”, „approved”), și cu mutarea oaspetelui. „You can see the photos here” trece; „Your dog can join you” (parafraza din audit, D06) și „Your move is confirmed” nu trec. Toate cazurile vechi din `test_requests.py` rămân blocate;
+  - politica mock acoperă aceleași situații: întrebări despre oferta primită (cu linkul), starea reparației fără o nouă sesizare, „da”/„nu” clar, predare către host, noua adresă după mutare. O întrebare nu e niciodată luată drept răspuns la ofertă.
+- **Evaluat pe model real** (`anthropic/claude-sonnet-5.5`, 14 noiembrie 2026): `scripts/eval_models.py` are 14 scenarii (cele 8 inițiale plus 6 conversații despre un incident, pornite printr-un incident real prin API). Verificarea datei acceptă și forma naturală („June 3”), nu doar ISO.
 
 ## Decizii
+- Copilotul nu cunoaște F2: vede doar `open_topics` și emite `GuestOfferAnswered`. Ce are voie să afle oaspetele hotărăște feature-ul care publică subiectul, nu promptul F3.
+- Confirmarea de primire a unui răspuns la ofertă e text fix, trimis de unealtă înaintea evenimentului — ordinea mesajelor rămâne firească (întâi „am transmis”, apoi confirmarea aprobată), iar agentul nu poate afirma rezultatul.
+- Garda pe text liber leagă formularea de subiect, în loc să interzică vorbe uzuale — pe model real vechea listă respingea răspunsuri inofensive („how the parking works”) și costa pași în plus.
 - După decizia hostului pleacă o confirmare canonică sau un refuz fix, fără o nouă rulare de agent. Autoritatea este aprobarea persistentă, nu payload-ul evenimentului. Repetarea deciziei nu dublează livrarea în procesul curent.
 - Mesajul oaspetelui intră în obiectiv între delimitatori, marcat ca date — reduce riscul ca textul oaspetelui să fie luat drept instrucțiune.
 - Modelele locale `GuestRequest` și funcțiile din `requests.py` impun identitatea semantică, capacitatea, limitele orare și scopul aprobării, fără modificarea contractelor comune. Textele propuse de LLM nu pot înlocui confirmarea generată de server.
@@ -123,11 +134,11 @@ Aceste reguli sunt pentru Claude Code. Scopul: implementarea să iasă bine din 
 - Confirmările canonice și refuzul fix sunt în engleză; localizarea lor controlată rămâne de extins.
 - Lockurile și deduplicarea livrării deciziilor sunt locale procesului unic. Nu există reluare durabilă după restart; o trimitere întreruptă după acceptarea de către PMS poate necesita verificare manuală.
 - Agentul comun poate lăsa o rulare anulată cu status `running` în trace. F3 eliberează lockul și notifică hostul; evaluatorul păstrează metricile deja persistate și marchează consumul incomplet. Nucleul nu a fost modificat.
-- Cele 8 scenarii există și trec pe mock; rularea lor pe 2–3 modele reale, alegerea modelului și ajustarea promptului necesită cheie OpenRouter și rămân de verificat manual.
+- Scenariile au fost rulate pe un singur model real (`anthropic/claude-sonnet-5.5`); comparația pe 2–3 modele din `CLAUDE.md` §5 nu a fost făcută.
 
 ## Note pentru Claude
 - Promptul descrie obiectivul și condiția de terminare; păstrează formatul „ai terminat când…”. Nu adăuga „ești un asistent”.
 - Orice unealtă nouă își moștenește parametrii din `ToolArgs` (are `reason`) și întoarce puțin text. Erorile se ridică normal: bucla le întoarce modelului.
 - Cifrele vin din unelte. Nu pune ore, prețuri sau date în prompt.
 - Când adaugi o unealtă sau schimbi fluxul, actualizează și `mock_llm.py`, altfel demo-ul pe mock nu o folosește.
-- Nu importa F2. Pentru incidente există doar evenimentul `IssueReported`.
+- Nu importa F2. Pentru incidente există evenimentele `IssueReported` și `GuestOfferAnswered` și subiectele din `ctx.guest_topics`.

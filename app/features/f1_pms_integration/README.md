@@ -1,5 +1,10 @@
 # F1 — Integrare PMS
 
+Actualizare relocări: adaptorul OwnerRez expune separat `move_reservations`, prin
+`PATCH /v2/bookings/{id}` cu `property_id`. F2 verifică rezultatul și sincronizează
+rezervarea înainte de confirmare. Aceasta nu activează scrierea generică a disponibilității.
+Refuzurile canalelor conectate sunt tratate explicit, fără mutare fictivă locală.
+
 Transportul mesajelor dintre PMS și aplicație. Doar transport, fără logică de business.
 
 | | |

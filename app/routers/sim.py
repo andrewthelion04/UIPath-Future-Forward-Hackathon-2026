@@ -57,8 +57,13 @@ def build_router(c: Container) -> APIRouter:
         """Sesizare de la personal (ex. doamna de curățenie) -> `IssueReported`."""
         if c.world.get_property(body.property_id) is None:
             raise HTTPException(404, f"unknown property {body.property_id}")
-        if body.booking_id and c.world.get_booking(body.booking_id) is None:
+        booking = c.world.get_booking(body.booking_id) if body.booking_id else None
+        if body.booking_id and booking is None:
             raise HTTPException(404, f"unknown booking {body.booking_id}")
+        if booking is not None and booking.property_id != body.property_id:
+            raise HTTPException(
+                422, f"booking {booking.id} is not a stay at property {body.property_id}"
+            )
         staff = {member.id: member for member in c.world.list_staff()}
         if body.staff_id and body.staff_id not in staff:
             raise HTTPException(404, f"unknown staff member {body.staff_id}")

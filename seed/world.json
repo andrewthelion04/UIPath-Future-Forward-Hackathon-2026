@@ -31,13 +31,13 @@
       "id": "staff_andrei",
       "name": "Andrei Stan",
       "role": "maintenance",
-      "property_external_ids": ["MOCK-PROP-1", "MOCK-PROP-2", "MOCK-PROP-3", "MOCK-PROP-4"]
+      "property_external_ids": ["MOCK-PROP-1", "MOCK-PROP-2", "MOCK-PROP-3", "MOCK-PROP-4", "MOCK-PROP-5", "MOCK-PROP-6"]
     },
     {
       "id": "staff_ioana",
       "name": "Ioana Radu",
       "role": "cleaner",
-      "property_external_ids": ["MOCK-PROP-4"]
+      "property_external_ids": ["MOCK-PROP-4", "MOCK-PROP-5", "MOCK-PROP-6"]
     }
   ],
   "properties": [
@@ -50,7 +50,8 @@
       "max_guests": 2,
       "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in"],
       "base_price": 70,
-      "currency": "EUR"
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/33615780"
     },
     {
       "external_id": "MOCK-PROP-2",
@@ -61,7 +62,8 @@
       "max_guests": 3,
       "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony"],
       "base_price": 85,
-      "currency": "EUR"
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/36172401"
     },
     {
       "external_id": "MOCK-PROP-3",
@@ -72,18 +74,44 @@
       "max_guests": 5,
       "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "self_check_in", "balcony", "parking"],
       "base_price": 120,
-      "currency": "EUR"
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/1063624740877318380"
     },
     {
       "external_id": "MOCK-PROP-4",
-      "name": "Brasov Mountain View Loft",
-      "city": "Brasov",
-      "address": "Strada Republicii 21, Brasov",
+      "name": "Floreasca Garden Studio",
+      "city": "Bucharest",
+      "address": "Calea Floreasca 111, Bucharest",
       "bedrooms": 1,
       "max_guests": 2,
-      "amenities": ["wifi", "kitchen", "heating", "parking", "fireplace"],
-      "base_price": 90,
-      "currency": "EUR"
+      "amenities": ["wifi", "kitchen", "air_conditioning", "parking", "workspace"],
+      "base_price": 78,
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/1538655218312297751"
+    },
+    {
+      "external_id": "MOCK-PROP-5",
+      "name": "Dorobanti City Apartment",
+      "city": "Bucharest",
+      "address": "Calea Dorobanti 60, Bucharest",
+      "bedrooms": 1,
+      "max_guests": 3,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "balcony", "elevator", "dishwasher"],
+      "base_price": 92,
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/1572459639428350279"
+    },
+    {
+      "external_id": "MOCK-PROP-6",
+      "name": "Aviatiei Family Apartment",
+      "city": "Bucharest",
+      "address": "Strada Aviator Popisteanu 8, Bucharest",
+      "bedrooms": 2,
+      "max_guests": 4,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "balcony", "parking"],
+      "base_price": 110,
+      "currency": "EUR",
+      "listing_url": "https://www.airbnb.com/rooms/1330605373645952305"
     }
   ],
   "reservations": [
@@ -258,7 +286,7 @@
       "external_id": "MOCK-REV-401",
       "property_external_id": "MOCK-PROP-4",
       "rating": 5,
-      "text": "The fireplace and the mountain view made our weekend. Would come back.",
+      "text": "Quiet studio with a lovely garden view. Parking right in front of the building was a big plus.",
       "author": "Victor",
       "days_ago": 15
     },
@@ -266,7 +294,7 @@
       "external_id": "MOCK-REV-402",
       "property_external_id": "MOCK-PROP-4",
       "rating": 3,
-      "text": "Beautiful loft but the heating took hours to warm the place and the hot water was lukewarm.",
+      "text": "Nice studio, but the heating took hours to warm the place and the hot water was lukewarm.",
       "author": "Elena",
       "days_ago": 31
     },
@@ -274,9 +302,57 @@
       "external_id": "MOCK-REV-403",
       "property_external_id": "MOCK-PROP-4",
       "rating": 4,
-      "text": "Cozy and well located. The key handover was a bit confusing, a lockbox would help.",
+      "text": "Great desk for working remotely. The key handover was a bit confusing, a lockbox would help.",
       "author": "Sam",
       "days_ago": 70
+    },
+    {
+      "external_id": "MOCK-REV-501",
+      "property_external_id": "MOCK-PROP-5",
+      "rating": 5,
+      "text": "Stylish apartment; the elevator and the dishwasher made a week-long stay easy.",
+      "author": "Radu",
+      "days_ago": 8
+    },
+    {
+      "external_id": "MOCK-REV-502",
+      "property_external_id": "MOCK-PROP-5",
+      "rating": 3,
+      "text": "Good location, but the wifi was slow and the street was noisy until late at night.",
+      "author": "Lena",
+      "days_ago": 22
+    },
+    {
+      "external_id": "MOCK-REV-503",
+      "property_external_id": "MOCK-PROP-5",
+      "rating": 4,
+      "text": "Bright flat with a nice balcony. There was some dust on the shelves when we arrived.",
+      "author": "Paul",
+      "days_ago": 44
+    },
+    {
+      "external_id": "MOCK-REV-601",
+      "property_external_id": "MOCK-PROP-6",
+      "rating": 5,
+      "text": "Plenty of space for the four of us and easy parking. The kids loved the balcony.",
+      "author": "Mara",
+      "days_ago": 11
+    },
+    {
+      "external_id": "MOCK-REV-602",
+      "property_external_id": "MOCK-PROP-6",
+      "rating": 3,
+      "text": "Spacious, but one mattress was worn out and the bathroom was not properly clean.",
+      "author": "Jonas",
+      "days_ago": 29
+    },
+    {
+      "external_id": "MOCK-REV-603",
+      "property_external_id": "MOCK-PROP-6",
+      "rating": 4,
+      "text": "Close to the park and the office district. The check-in instructions arrived late.",
+      "author": "Irina",
+      "days_ago": 52
     }
   ],
   "comparables": [
@@ -342,22 +418,32 @@
     },
     {
       "ref": "MOCK-CMP-7",
-      "title": "Brasov Old Center Loft",
-      "city": "Brasov",
+      "title": "Floreasca Business Studio",
+      "city": "Bucharest",
       "bedrooms": 1,
       "max_guests": 2,
-      "amenities": ["wifi", "kitchen", "heating", "parking", "fireplace"],
-      "nightly_price": 84,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "parking", "workspace"],
+      "nightly_price": 74,
       "currency": "EUR"
     },
     {
       "ref": "MOCK-CMP-8",
-      "title": "Brasov Budget Studio",
-      "city": "Brasov",
+      "title": "Dorobanti Balcony Flat",
+      "city": "Bucharest",
       "bedrooms": 1,
-      "max_guests": 2,
-      "amenities": ["wifi", "heating"],
-      "nightly_price": 55,
+      "max_guests": 3,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "balcony", "elevator", "dishwasher"],
+      "nightly_price": 89,
+      "currency": "EUR"
+    },
+    {
+      "ref": "MOCK-CMP-9",
+      "title": "Aviatiei Park Apartment",
+      "city": "Bucharest",
+      "bedrooms": 2,
+      "max_guests": 4,
+      "amenities": ["wifi", "kitchen", "air_conditioning", "washer", "balcony", "parking"],
+      "nightly_price": 104,
       "currency": "EUR"
     }
   ]

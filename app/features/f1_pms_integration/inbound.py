@@ -104,9 +104,10 @@ class InboundPipeline:
         task.add_done_callback(finished)
 
     async def close(self) -> None:
-        """Terminăm reprocesările programate înainte ca aplicația să închidă baza."""
-        if self._reprocess_tasks:
+        """Terminăm reprocesările programate înainte ca baza să fie închisă sau recreată."""
+        while self._reprocess_tasks:
             await asyncio.gather(*list(self._reprocess_tasks.values()), return_exceptions=True)
+            await asyncio.sleep(0)  # callback-urile de final scot sarcinile din dicționar
 
     async def process(self, provider: str, payload: Any, *, source: str) -> InboundResult:
         """Procesează un payload brut. Nu ridică excepții: rezultatul spune ce s-a întâmplat."""
@@ -188,13 +189,41 @@ class InboundPipeline:
         if cursor.rowcount == 0:
             return InboundResult(outcome=InboundOutcome.DUPLICATE), message_key
 
-        # 5. Maparea rezervării externe la ID-ul intern.
+        try:
+            return await self._map_and_publish(provider, inbound, source), message_key
+        except Exception:
+            # Mesajul nu a ajuns în fluxul de business: eliberăm cheia de deduplicare, ca
+            # retry-ul PMS-ului să fie procesat, nu respins ca duplicat.
+            ctx.db.execute(
+                "DELETE FROM f1_seen_messages WHERE provider = ? AND external_message_id = ?",
+                (provider, message_key),
+            )
+            raise
+
+    def _booking_for(self, provider: str, inbound: InboundMessage) -> Booking | None:
+        """Rezervarea internă a mesajului, doar dacă aparține aceleiași conexiuni PMS."""
+        ctx = self._ctx
         booking_id = (
             ctx.ids.to_internal(provider, RESERVATION, inbound.external_reservation_id)
             if inbound.external_reservation_id
             else None
         )
         booking = ctx.world.get_booking(booking_id) if booking_id else None
+        if booking is not None and booking.pms_provider != provider:
+            # O mapare greșită ar trimite răspunsul prin alt PMS decât cel al oaspetelui.
+            logger.warning(
+                "Reservation %s on '%s' is mapped to booking %s of '%s'; message not processed",
+                inbound.external_reservation_id, provider, booking.id, booking.pms_provider,
+            )
+            return None
+        return booking
+
+    async def _map_and_publish(
+        self, provider: str, inbound: InboundMessage, source: str
+    ) -> InboundResult:
+        ctx = self._ctx
+        # 5. Maparea rezervării externe la ID-ul intern.
+        booking = self._booking_for(provider, inbound)
         if booking is None:
             ctx.notify(
                 "Guest message on an unmapped reservation",
@@ -203,15 +232,10 @@ class InboundPipeline:
                 f"reservation manually.\n\nMessage: {inbound.body[:500]}",
                 level="warning",
             )
-            return (
-                InboundResult(
-                    outcome=InboundOutcome.UNMAPPED, detail="reservation is not mapped"
-                ),
-                message_key,
-            )
+            return InboundResult(outcome=InboundOutcome.UNMAPPED, detail="reservation is not mapped")
 
         # 6. Publicăm evenimentul intern.
-        return await self._publish(booking, inbound, source), message_key
+        return await self._publish(booking, inbound, source)
 
     async def _publish(
         self, booking: Booking, inbound: InboundMessage, source: str
@@ -225,17 +249,22 @@ class InboundPipeline:
             pms_provider=booking.pms_provider,
             status="received",
         )
-        event = await ctx.bus.publish(
-            GuestMessageReceived(
-                message_id=message.id,
-                booking_id=booking.id,
-                property_id=booking.property_id,
-                text=inbound.body,
-                pms_provider=booking.pms_provider,
-                source_channel=booking.source_channel,
-                source=source,
+        try:
+            event = await ctx.bus.publish(
+                GuestMessageReceived(
+                    message_id=message.id,
+                    booking_id=booking.id,
+                    property_id=booking.property_id,
+                    text=inbound.body,
+                    pms_provider=booking.pms_provider,
+                    source_channel=booking.source_channel,
+                    source=source,
+                )
             )
-        )
+        except Exception:
+            # Fără eveniment, mesajul va fi reluat: nu lăsăm o intrare dublă în conversație.
+            ctx.db.execute("DELETE FROM messages WHERE id = ?", (message.id,))
+            raise
         return InboundResult(
             outcome=InboundOutcome.PUBLISHED,
             event_id=event.event_id,
@@ -271,11 +300,7 @@ class InboundPipeline:
                         inbound = connection.parse_webhook(from_json(row["payload"]))
                         if inbound is None or inbound.sender_type != "guest":
                             continue
-                        booking_id = (
-                            ctx.ids.to_internal(name, RESERVATION, inbound.external_reservation_id)
-                            if inbound.external_reservation_id else None
-                        )
-                        booking = ctx.world.get_booking(booking_id) if booking_id else None
+                        booking = self._booking_for(name, inbound)
                         if booking is None:
                             continue
                         # Nu repetăm inserarea în f1_seen_messages: cheia există deja.

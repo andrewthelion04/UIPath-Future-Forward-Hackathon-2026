@@ -1,60 +1,78 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import ApprovalsInbox from '@/components/ApprovalsInbox';
+import AnswersInbox from '@/components/AnswersInbox';
 import IncidentsList, { isOpen } from '@/components/IncidentsList';
 import NotificationsList from '@/components/NotificationsList';
 import PropertiesList from '@/components/PropertiesList';
 import {
   api,
+  subscribeUpdates,
   API_URL,
   type Approval,
   type Incident,
   type Notification,
   type Property,
+  type HostAnswer,
 } from '@/lib/api';
 
 type Tab = 'approvals' | 'notifications' | 'incidents' | 'properties';
 
-const REFRESH_MS = 5000;
-
 export default function App() {
   const [tab, setTab] = useState<Tab>('approvals');
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [answers, setAnswers] = useState<HostAnswer[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [liveStatus, setLiveStatus] = useState('Connecting');
+
+  // Numărul de ordine al ultimei reîmprospătări pornite și al ultimei aplicate: un răspuns
+  // vechi, sosit după unul mai nou, nu are voie să readucă în ecran o stare depășită.
+  const started = useRef(0);
+  const applied = useRef(0);
 
   const refresh = useCallback(async () => {
-    try {
-      const [nextApprovals, nextNotifications, nextProperties, nextIncidents] = await Promise.all([
+    const order = ++started.current;
+    // Fiecare listă se încarcă independent: una căzută nu le golește pe celelalte.
+    const [nextApprovals, nextNotifications, nextProperties, nextIncidents, nextAnswers] =
+      await Promise.allSettled([
         api.approvals(),
         api.notifications(),
         api.properties(),
         api.incidents(),
+        api.answers(),
       ]);
-      setApprovals(nextApprovals);
-      setNotifications(nextNotifications);
-      setProperties(nextProperties);
-      setIncidents(nextIncidents);
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setLoaded(true);
-    }
+    if (order < applied.current) return;
+    applied.current = order;
+    if (nextApprovals.status === 'fulfilled') setApprovals(nextApprovals.value);
+    if (nextNotifications.status === 'fulfilled') setNotifications(nextNotifications.value);
+    if (nextProperties.status === 'fulfilled') setProperties(nextProperties.value);
+    if (nextIncidents.status === 'fulfilled') setIncidents(nextIncidents.value);
+    if (nextAnswers.status === 'fulfilled') setAnswers(nextAnswers.value);
+    const failed = [nextApprovals, nextNotifications, nextProperties, nextIncidents, nextAnswers].find(
+      (result) => result.status === 'rejected',
+    );
+    setError(
+      failed?.status === 'rejected'
+        ? failed.reason instanceof Error
+          ? failed.reason.message
+          : String(failed.reason)
+        : null,
+    );
+    setLoaded(true);
   }, []);
 
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => void refresh(), REFRESH_MS);
-    return () => clearInterval(timer);
+    return subscribeUpdates(() => void refresh(), setLiveStatus);
   }, [refresh]);
 
   const unread = notifications.filter((item) => !item.read).length;
   const tabs: { id: Tab; label: string; count: number }[] = [
-    { id: 'approvals', label: 'Approvals', count: approvals.length },
+    { id: 'approvals', label: 'Approvals / Answers', count: approvals.length + answers.length },
     { id: 'notifications', label: 'Notifications', count: unread },
     { id: 'incidents', label: 'Incidents', count: incidents.filter(isOpen).length },
     { id: 'properties', label: 'Properties', count: 0 },
@@ -64,6 +82,7 @@ export default function App() {
     <main>
       <header>
         <h1>StayPilot AI</h1>
+        <small aria-live="polite">{liveStatus}</small>
         <button className="link" onClick={() => void refresh()}>
           Refresh
         </button>
@@ -90,7 +109,10 @@ export default function App() {
       ) : (
         <section>
           {tab === 'approvals' && (
-            <ApprovalsInbox approvals={approvals} onChanged={() => void refresh()} onError={setError} />
+            <>
+              <AnswersInbox answers={answers} onChanged={() => void refresh()} onError={setError} />
+              <ApprovalsInbox approvals={approvals} onChanged={() => void refresh()} onError={setError} />
+            </>
           )}
           {tab === 'notifications' && (
             <NotificationsList

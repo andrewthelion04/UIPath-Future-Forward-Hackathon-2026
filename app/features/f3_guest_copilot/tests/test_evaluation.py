@@ -69,7 +69,7 @@ def test_mock_cli_runs_all_scenarios_without_touching_configured_database(tmp_pa
     assert {result["scenario"] for result in report["results"]} == {
         scenario.name for scenario in eval_models.SCENARIOS
     }
-    assert len(report["results"]) == 8
+    assert len(report["results"]) == 14  # 8 cereri ale oaspetelui + 6 conversații despre un incident
     for result in report["results"]:
         assert result["model"] == "mock" and result["success"] is True
         assert result["steps"] > 0 and result["elapsed_s"] > 0 and result["cost"] >= 0

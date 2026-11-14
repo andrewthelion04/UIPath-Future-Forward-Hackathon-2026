@@ -27,9 +27,19 @@ La cererea hostului, preia recenziile unei proprietăți din sursa configurată 
   - Old Town Studio → `rooms/33615780` (Centrul Vechi, 1 cameră, 4.94★)
   - Calea Victoriei Apartment → `rooms/36172401` (pe Calea Victoriei, balcon, AC, 4.96★)
   - Herastrau Family Flat → `rooms/1063624740877318380` (Aviației, parcare, 4.98★)
-  - Brasov Mountain View Loft → nelegat (niciun anunț primit nu e în Brașov).
+  - Floreasca Garden Studio → `rooms/1538655218312297751`, Dorobanti City Apartment → `rooms/1572459639428350279`, Aviatiei Family Apartment → `rooms/1330605373645952305` (adăugate la 14 noiembrie 2026, când lumea demo a trecut la șase proprietăți în București; linkurile răspund, dar recenziile lor nu au fost încă preluate prin Apify).
+  - Aceleași șase linkuri sunt și în `seed/world.json` (`listing_url`), de unde le folosesc oferta de relocare și copilotul.
+- **După auditul de integrare (14 noiembrie 2026)** (`tests/test_integration_guards.py`):
+  - la host ajunge doar ce a trecut prin `add_recommendation`: fără recomandări înregistrate, textul analizei e `NOTHING_TO_FIX` (scris în cod), iar dovezile salvate sunt doar citatele verificate; `result` și `evidence` din `finish` nu se mai salvează;
+  - o singură analiză per proprietate la un moment dat (lock per proprietate): două cereri simultane rulează agentul o dată, a doua primește „No new reviews”;
+  - lotul de recenzii trebuie să fie al proprietății cerute (`checked_batch`): altă proprietate sau recenzii amestecate = eroare a sursei, deci fallback pe ultimul snapshot; recenziile cu același ID se numără o dată;
+  - `theme` și `action` se curăță de spații înainte de validarea lungimii; fragmentele unui citat cu „...” trebuie să apară în ordinea dată;
+  - adaptorul Apify ignoră itemii altui anunț (`startUrl`), recenziile repetate și ratingurile booleene;
+  - pagina F4 și simulatorul spun „still running” când API-ul întoarce `completed=false`, nu „finished”.
+- **Pasul 5 (autentificare pe API) e implementat** în nucleu: `API_TOKEN` (vezi `docs/ARCHITECTURE.md`, decizia 36, și `tests/test_api_auth.py`).
 
 ## Decizii
+- Textul liber al modelului nu e sursă de recomandări — garanția „citatele există în recenzii” nu poate fi ocolită sărind peste unealtă.
 - Recenziile sunt citite de handler și puse la dispoziția agentului prin unelte țintite — modelul nu primește toate recenziile în prompt, iar cifrele vin din cod.
 - Snapshot doar când recenziile s-au schimbat — §4 cere snapshot cu sursă și dată; un snapshot identic nu adaugă informație, iar fallback-ul folosește oricum ultimul.
 - Fără aprobare — nu există acțiune cu impact, doar recomandări.
@@ -53,7 +63,7 @@ La cererea hostului, preia recenziile unei proprietăți din sursa configurată 
 2. [x] **Comparație cu analiza anterioară.** Notificarea spune ce temă e nouă, ce persistă și ce a dispărut față de ultima analiză a proprietății.
 3. [x] **Snapshot-uri fără dubluri.** Dacă recenziile preluate sunt identice cu ultimul snapshot, nu se salvează unul nou.
 4. [x] **Analiza tuturor proprietăților** fără risc de timeout: câte un eveniment per proprietate sau un timeout de handler potrivit.
-5. [ ] **Autentificare pe API** (PR separat, în nucleu; neînceput — atinge `app/core/`/`app/main.py`, `ui/` și `extension/`, în afara zonei permise): un token opțional din config, cerut pe toate endpointurile în afară de `/health` și `/webhooks/*`; Streamlit și extensia îl trimit.
+5. [x] **Autentificare pe API** (în nucleu: `app/main.py`, `ui/api_client.py`, `extension/lib/api.ts`): un token opțional din config, cerut pe toate endpointurile în afară de `/health` și `/webhooks/*`; Streamlit și extensia îl trimit.
 
 **Criterii de acceptare:**
 - recomandările au temă și prioritate și apar sortate în pagina F4;
@@ -85,13 +95,11 @@ Aceste reguli sunt pentru Claude Code. Scopul: implementarea să iasă bine din 
 <de completat de membrul care preia feature-ul, înainte de one-shot: ce vrem exact în plus sau altfel față de planul de mai sus>
 
 ## Probleme deschise / TODO
-- Pasul 5 (autentificare pe API) — PR separat în nucleu.
 - **LLM real verificat o singură dată** (14 noiembrie 2026, `anthropic/claude-sonnet-5.5`, Old Town Studio, 50 de recenzii Apify): 3 pași, 4 recomandări cu citate valide (nicio respingere), prioritățile coerente, ~15 s, ~$0.03. Încă neverificate cu modelul real: comparația pe mai multe rulări (stabilitatea numelor de teme), scenariile de eroare, alte modele (§5: scriptul de evaluare).
 - Pe recenziile reale politica mock dă rezultate slabe: potrivește cuvinte-cheie fără context (ex. „Noise canceling windows” → temă „Noise”). E doar pentru demo/teste fără cheie.
 - Anunțurile reale primite au 4.84–5.0★; între ultimele 50 de recenzii sunt puține critici, deci „nothing to fix” e un rezultat așteptat. Pentru un demo cu recomandări consistente, un anunț cu mai multe recenzii de 3–4★ ar arăta mai bine.
-- Brasov Mountain View Loft nu are un anunț real; cu `REVIEWS_PROVIDER=apify` analiza lui e „skipped” (avertisment). Se rezolvă adăugând un URL din Brașov în `listings.json`.
+- Cele trei anunțuri adăugate pentru proprietățile noi nu au fost rulate prin Apify: de verificat că actorul întoarce recenzii pentru ele.
 - Apify întoarce recenzii fără `localizedText` pentru limbile pe care Airbnb nu le traduce; atunci rămâne originalul.
-- `docs/ARCHITECTURE.md` §4 („Cine deține ce date”) nu listează încă `f4_recommendations` — adăugare de o linie, într-un PR comun.
 - Snapshot-urile vechi nu se curăță (acum cresc doar când recenziile se schimbă).
 - Comparația temelor depinde de nume: un model real care numește altfel aceeași problemă („Internet” vs „Wi-Fi”) o raportează ca nouă + dispărută. Atenuare: temele anterioare sunt date în obiectiv. De verificat cu un model real.
 - Analizele „all properties” pornesc în paralel; cu un model real și multe proprietăți pot apărea limite de rată la OpenRouter. Nu există limită de concurență.

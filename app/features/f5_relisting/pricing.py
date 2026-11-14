@@ -99,6 +99,7 @@ def distribute_prices(
         price = _money(Decimal(str(day.price)) * factor)
         result.append(NightlyPrice(
             day=day.day, original_price=day.price, floor_price=floor,
-            proposed_price=cap_price(max(0.01, price, floor), day.price),
+            # Cel puțin un cent: o noapte cu preț pozitiv nu devine gratuită prin rotunjire.
+            proposed_price=cap_price(max(price, floor, 0.01), day.price),
         ))
     return result

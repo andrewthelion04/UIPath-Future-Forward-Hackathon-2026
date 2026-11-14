@@ -20,8 +20,15 @@ Transportul mesajelor dintre PMS și aplicație, în ambele direcții, fără lo
 - Calendarul OwnerRez returnează fiecare noapte din `[start, end)`, ocuparea rezervărilor/blocărilor și tarifele spot, cu fallback `base_price` / `0.0`. `read_calendar=True`; `write_availability=False` rămâne explicit.
 - Testele fără rețea acoperă autentificarea, concurența, reprocesarea și anulările cap-coadă pentru ambele adaptoare, plus calendarul cu `MockTransport`.
 - Verificat la 14 noiembrie 2026: `python manage.py test` — **244 passed**. Smoke cu API și Streamlit pornite pe mock: mesaj → răspuns copilot, duplicat ignorat, mesaj nemapat → mapare manuală → publicare automată unică; butonul de reprocesare se actualizează corect.
+- **După auditul de integrare (14 noiembrie 2026):**
+  - dacă publicarea evenimentului eșuează, cheia de deduplicare se eliberează și intrarea din conversație se șterge: retry-ul PMS-ului e procesat (`published`), nu respins ca `duplicate`, iar reprocesarea nu dublează mesajul în conversație;
+  - un mesaj a cărui rezervare e mapată la o rezervare internă a altei conexiuni PMS rămâne `unmapped` (altfel răspunsul ar pleca prin PMS-ul greșit); `PUT /integrations/mappings` refuză o astfel de mapare cu `409`;
+  - reprocesările programate sunt așteptate și la `Container.shutdown()` / resetul lumii, prin `ctx.on_quiesce(pipeline.close)`, nu doar prin lifespan-ul routerului;
+  - paginarea OwnerRez ridică `PmsError` dacă un răspuns `200` nu conține lista de elemente (un calendar necitit nu mai arată nopți libere).
+  - Teste: `tests/test_publish_failures.py`, `tests/test_integration_guards.py` (rădăcină), `tests/test_real_adapters.py`.
 
 ## Decizii
+- Cheia din `f1_seen_messages` înseamnă „mesaj livrat fluxului de business sau păstrat ca `unmapped`”, nu „mesaj văzut”: la o eroare de publicare se șterge, ca retry-ul să nu se piardă.
 - `ChannelGateway` stă în nucleu (`app/core/channel_gateway.py`), nu aici — îl folosesc toate feature-urile, iar un feature nu poate importa alt feature.
 - Mesajul din simulator trece prin PMS-ul mock și prin același pipeline — așa simulatorul și un PMS real produc același eveniment pe același drum.
 - Deduplicarea vine după filtru și înaintea mapării; o retrimitere rămâne `duplicate`. Reprocesarea citește numai rândurile `unmapped`, ocolește `f1_seen_messages` și actualizează condiționat rândul original la `published` cu `event_id`.

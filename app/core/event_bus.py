@@ -118,11 +118,23 @@ class EventBus:
             await asyncio.wait(set(self._tasks), timeout=remaining)
         return True
 
+    async def cancel_running(self) -> int:
+        """Oprește handlerii în curs și îi așteaptă să se încheie. Întoarce câți a oprit.
+
+        Folosit la shutdown și la resetul lumii: un handler vechi nu mai are voie să scrie
+        după ce baza a fost închisă sau recreată.
+        """
+        cancelled = 0
+        while self._tasks:  # un handler oprit poate apuca să pornească altul
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            cancelled += len(tasks)
+        return cancelled
+
     async def shutdown(self) -> None:
-        for task in list(self._tasks):
-            task.cancel()
-        if self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        await self.cancel_running()
 
     # --- Citire (UI de depanare) ---------------------------------------------------
 

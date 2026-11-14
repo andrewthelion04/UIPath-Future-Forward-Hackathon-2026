@@ -39,6 +39,7 @@ class MockPmsAdapter:
         read_calendar=True,
         write_prices=True,
         write_availability=True,
+        move_reservations=True,
     )
 
     def __init__(self, world: MockWorld, ids: IdMapper) -> None:
@@ -60,6 +61,9 @@ class MockPmsAdapter:
 
     async def list_reservations(self) -> list[PmsReservation]:
         return [PmsReservation(**data) for data in self._world.reservations()]
+
+    async def move_reservation(self, booking_id: str, property_id: str) -> None:
+        self._world.move_reservation(self._external(RESERVATION, booking_id), self._external(PROPERTY, property_id))
 
     # --- MessagingPort -------------------------------------------------------------
 

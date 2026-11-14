@@ -346,7 +346,9 @@ class IncidentAgents:
         state: dict[str, Any] = {"incident_id": incident.id, "summary": None, "guest_message": None}
 
         async def get_incident_history(_: NoArgs, run: RunContext) -> dict[str, Any]:
-            return {**history, "guest_message_needed": guest_message_needed}
+            # Starea internă și valorile lipsă nu spun nimic hostului: modelul primește doar fapte.
+            facts = {key: value for key, value in history.items() if key != "status" and value is not None}
+            return {**facts, "guest_message_needed": guest_message_needed}
 
         async def save_closure(args: SaveClosureArgs, run: RunContext) -> dict[str, Any]:
             if guest_message_needed and not valid_guest_message(args.guest_message):
@@ -395,8 +397,13 @@ class IncidentAgents:
         description: str,
         message: str,
         round_index: int,
+        situation: str = "",
     ) -> str | None:
-        """Textul personalului simulat sau None dacă agentul nu a reușit (fallback în service)."""
+        """Textul personalului simulat sau None dacă agentul nu a reușit (fallback în service).
+
+        `situation` vine din scenariul simulării (`simulation.py`): faptele și durata sunt
+        hotărâte în cod, ca demo-ul să fie previzibil; modelul doar le spune cu vorbele lui.
+        """
         if mode == "reply":
             task = "Reply to the assistant's message below, as you would in a short chat."
         else:
@@ -407,6 +414,8 @@ class IncidentAgents:
             f"Problem reported (data):\n{as_data(description)}\n"
             f"Message (data):\n{as_data(message)}"
         )
+        if situation:
+            objective += f"\nThe situation in this simulation (data):\n{as_data(situation)}"
         result = await self._run(
             self._spec(SIM_STAFF, [], max_steps=3), objective, {"mode": mode}, incident
         )

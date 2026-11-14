@@ -90,6 +90,18 @@ class ReviewAnalysisRequested(Event):
     requested_by: str = "host"
 
 
+class GuestOfferAnswered(Event):
+    """Oaspetele a răspuns la o ofertă publicată de un feature prin `GuestTopics`.
+
+    Îl emite cine vorbește cu oaspetele; ajunge doar la feature-ul care a făcut oferta.
+    """
+
+    topic_id: str
+    booking_id: str
+    feature: str
+    choice: Literal["accept", "decline"]
+
+
 # --- Human-in-the-loop -------------------------------------------------------------
 
 

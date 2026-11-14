@@ -504,7 +504,10 @@ class Relisting:
         if proposal is None:
             return
         async with self._locks.setdefault(proposal.property_id, asyncio.Lock()):
-            await self._apply_decision(event)
+            # Lockul comun al calendarului: verificarea și scrierea prețurilor nu se
+            # intercalează cu alt feature care scrie aceleași nopți (ex. o relocare F2).
+            async with self._ctx.calendar.lock(proposal.property_id):
+                await self._apply_decision(event)
 
     async def _apply_decision(self, event: ApprovalDecided) -> None:
         ctx = self._ctx
@@ -628,7 +631,8 @@ class Relisting:
         for night in proposal.nightly_prices:
             minimum = max(0.01, floor_price(night.original_price, rules.max_relist_discount_pct))
             if not minimum <= night.proposed_price <= night.original_price:
-                return "The approved prices no longer satisfy the current host discount policy."
+                return (f"Your maximum relisting discount is now {rules.max_relist_discount_pct:g}%, "
+                        "and the approved prices no longer satisfy the current host discount policy.")
         return None
 
     @staticmethod
@@ -704,6 +708,8 @@ class Relisting:
             ("Check-in reached; approval can no longer change the calendar.", utcnow().isoformat(), proposal.id),
         )
         if changed.rowcount:
+            if proposal.approval_id:  # nu lăsăm în inbox o aprobare care nu mai poate face nimic
+                self._ctx.approvals.withdraw(proposal.approval_id, reason="Check-in reached.")
             self._notify_expired(proposal)
         return True
 

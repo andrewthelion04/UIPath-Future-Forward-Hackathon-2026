@@ -67,7 +67,7 @@ async def test_seeded_world_is_relationally_coherent(container):
     properties = {p.id: p for p in world.list_properties()}
     bookings = world.list_bookings()
 
-    assert world.get_host() is not None and len(properties) == 4 and len(bookings) == 7
+    assert world.get_host() is not None and len(properties) == 6 and len(bookings) == 7
     assert all(b.property_id in properties for b in bookings)
     assert all(pid in properties for member in world.list_staff() for pid in member.property_ids)
     assert all(b.guest_count <= properties[b.property_id].max_guests for b in bookings)

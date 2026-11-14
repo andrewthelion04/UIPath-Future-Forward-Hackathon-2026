@@ -83,6 +83,16 @@ class ChannelGateway:
             pms_provider=booking.pms_provider,
             status="sent",
         )
+        if sender == "copilot":
+            prop = self._world.get_property(booking.property_id)
+            self._notifications.notify(
+                feature=feature,
+                level="info",
+                title=f"New automated answer by Agent in chat with {booking.guest_name}",
+                body=f"{prop.name if prop else 'Property'} · {booking.pms_provider.value}",
+                booking_id=booking.id,
+                property_id=booking.property_id,
+            )
         await self._bus.publish(
             GuestMessageSent(
                 message_id=message.id,

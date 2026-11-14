@@ -49,9 +49,12 @@ La prima pornire, API-ul populează singur lumea simulată. Nu trebuie activat m
 | F3 + aprobare | *Guest chat* → „Request early check-in” | Cererea din *Approvals*; după aprobare, oaspetele primește confirmarea |
 | F3 → F2 | *Guest chat* → „Report a problem” | Evenimentul `IssueReported` în *Events* și incidentul în *F2 · Incidents* |
 | F2 | *Staff report* | Aprobarea cu opțiunile remediere / relocare |
+| F2 + F3 | cu `F2_SIM_GUEST_ANSWER=off`: după oferta de relocare, *Guest chat* → Lukas întreabă de poze, apoi acceptă | Copilotul răspunde din datele ofertei (cu linkul anunțului) și transmite răspunsul; incidentul devine `relocated` |
 | F4 | *Review analysis* | Recomandările din *Notifications* și din *F4 · Review Analysis* |
 | F5 | *Cancel booking* → Emma Johnson | *Agent timeline* și notificări F5; propunere în *Approvals*; după aprobare, calendarul din *World data* |
 | Reset | *Reset world* | Lumea revine la starea din seed |
+
+Pagina **Agent dashboard** arată, din jurnalele reale ale rulării, ce a făcut agentul singur, ce a cerut hostului și motivul fiecărui pas: indicatorii, povestea fiecărui flux și jurnalul deciziilor. Scenariul de prezentare, pas cu pas, e în [`docs/DEMO.md`](docs/DEMO.md).
 
 Pagina *F1 · Pms Integration* are un tester de webhook cu payload-uri de exemplu: mesaj de la oaspete, duplicat, ecoul propriului mesaj (filtrul anti-buclă), rezervare nemapată.
 
@@ -115,7 +118,9 @@ Configurează în PMS adresa `https://<adresa-tunelului>/webhooks/<provider>`, d
 F1 oferă și Basic Auth OwnerRez (`F1_OWNERREZ_WEBHOOK_USERNAME` + `F1_OWNERREZ_WEBHOOK_PASSWORD`) și filtrare CIDR opțională Hospitable (`F1_HOSPITABLE_WEBHOOK_ALLOW_CIDRS`). Configurarea, reprocesarea mesajelor nemapate și limitele calendarului sunt descrise în [README-ul F1](app/features/f1_pms_integration/README.md).
 
 - Endpointul răspunde mereu `200` și procesează în background. Payload-urile brute se păstrează și se văd în pagina *F1* sau la `GET /f1/webhook-log`.
-- **Atenție:** tunelul expune tot API-ul, iar API-ul nu are autentificare. Ține tunelul deschis doar cât testezi și setează `WEBHOOK_TOKEN` în `.env`; atunci webhook-urile trebuie să vină la `/webhooks/<provider>?token=<valoarea>`.
+- **Atenție:** tunelul expune tot API-ul. Înainte să-l deschizi, setează în `.env`:
+  - `API_TOKEN` — orice request cere atunci `Authorization: Bearer <valoarea>`, în afară de `/health` și `/webhooks/*`. Streamlit îl citește din același `.env`; extensia îl primește la build (`WXT_API_TOKEN=<valoarea> npm run build`). Fără el, oricine are adresa tunelului poate aproba o cerere.
+  - `WEBHOOK_TOKEN` — webhook-urile trebuie să vină atunci la `/webhooks/<provider>?token=<valoarea>`.
 
 ## Extensia Chrome
 
@@ -126,7 +131,7 @@ npm run dev       # deschide Chrome cu extensia încărcată și reîncărcare a
 npm run build     # build de producție în extension/.output/chrome-mv3
 ```
 
-Pentru build-ul de producție: `chrome://extensions` → *Developer mode* → *Load unpacked* → alege `extension/.output/chrome-mv3`. Clic pe iconița extensiei deschide panoul lateral cu aprobările, notificările și proprietățile. API-ul trebuie să ruleze pe `http://127.0.0.1:8000`; altă adresă se dă la build prin `WXT_API_URL`.
+Pentru build-ul de producție: `chrome://extensions` → *Developer mode* → *Load unpacked* → alege `extension/.output/chrome-mv3`. Clic pe iconița extensiei deschide panoul lateral cu aprobările, notificările și proprietățile. API-ul trebuie să ruleze pe `http://127.0.0.1:8000`; altă adresă se dă la build prin `WXT_API_URL` (permisiunile din manifest o urmează automat), iar tokenul API-ului, dacă e setat, prin `WXT_API_TOKEN`. Tokenul ajunge în bundle, deci un build făcut cu el nu se distribuie.
 
 ## Teste
 

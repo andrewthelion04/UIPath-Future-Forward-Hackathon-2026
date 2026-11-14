@@ -118,6 +118,30 @@ Acestea rămân relevante pentru afirmația „toate feature-urile sunt complete
 | D06 | **Garda F3 pentru text liber este euristică.** Cu reguli `pets_allowed=false`, un LLM controlat a trimis `Your dog can join you during the stay.` fără aprobare. Confirmările tipizate au controale stricte, dar textul liber poate exprima aceeași permisiune prin altă formulare. Limita este declarată; confirmările canonice și refuzul sunt încă în engleză. Dovadă: `core.json`, `free_text_guard_paraphrase`. |
 | D07 | **Documentația centrală este în urma implementării.** `docs/ARCHITECTURE.md:102` omite `f4_recommendations`; `:132` spune că nu se citește niciun calendar real; `:133` spune că F3 nu are coadă; `:137` spune că evaluatorul nu există. `:109` afirmă că niciun adaptor nu a fost verificat cu chei reale, în contradicție cu verificarea Apify consemnată în CLAUDE F4. |
 
+## Stare după corecturi (14 noiembrie 2026)
+
+Secțiunile de mai sus descriu aplicația **înainte** de corecturi și rămân ca istoric. Toate cele 34 de neconcordanțe confirmate sunt corectate, fiecare cu test de regresie; `python manage.py test` trece cu **572 de teste** (513 înainte). Mecanismele comune sunt descrise în `docs/ARCHITECTURE.md`, „Garanții adăugate după auditul de integrare”.
+
+| ID | Stare | Unde e testul |
+|---|---|---|
+| C01, C06, C07, P02 | corectat în nucleu | `tests/test_integration_guards.py` |
+| C02, C03, C04 | corectat | `app/features/f1_pms_integration/tests/test_publish_failures.py`, `tests/test_integration_guards.py` |
+| C05 | corectat | `tests/test_real_adapters.py` |
+| I01–I05, I07–I11 | corectat (I11: ținta cu incident deschis nu se mai oferă) | `app/features/f2_incidents/tests/test_integration_guards.py` |
+| I06 | corectat în ambele inboxuri și în rezumatul aprobării | `tests/test_ui_smoke.py`, testele F2 |
+| R01–R08 | corectat | `app/features/f4_review_analysis/tests/test_integration_guards.py` |
+| P01, P03, P04, P05 | corectat | `app/features/f5_relisting/tests/test_integration_guards.py` |
+| U01–U04 | corectat; `npm run compile` și `npm run build` trec | fără test automat (extensia nu are suită de teste) |
+| D01 | implementat: `API_TOKEN` opțional | `tests/test_api_auth.py` |
+| D04 | corectat în proces: lock comun pe calendar | testele F2 și F5 |
+| D07 | documentația centrală actualizată | — |
+| D03 | închis ulterior: copilotul transmite răspunsul la ofertă prin `GuestOfferAnswered` | testele F2 și F3 de conversație |
+| D02 | atenuat: după relocare copilotul răspunde cu noua adresă; rezervarea din PMS se mută tot manual | testele F3 de conversație |
+| D06 | atenuat: parafraza din audit e acum blocată; garda rămâne euristică | `test_incident_conversation.py` |
+| D05 | **rămâne deschis**, documentat în `docs/ARCHITECTURE.md` §6 | — |
+
+**Scripturile de reproducere din `scripts/`** verifică prezența defectelor vechi, deci cele mai multe se opresc acum la prima aserțiune (defectul nu mai apare). `scripts/audit_integration_core.py` raportează `PASS` pentru toate cazurile, în afară de `public_api_without_auth` (cazul setează doar `WEBHOOK_TOKEN`; autentificarea API-ului se activează cu `API_TOKEN`) și `free_text_guard_paraphrase` (D06, deschis). `f5_pricing_stress.py` raportează zero încălcări.
+
 ## Cum se reproduc probele
 
 Din rădăcina proiectului, folosind mediul virtual existent:

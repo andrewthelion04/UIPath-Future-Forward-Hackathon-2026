@@ -109,9 +109,9 @@ def test_llm_failure_falls_back_to_the_host_and_does_not_break_other_features(se
         emma = guest_says(client, "Emma Johnson", "What time is check-in?")
 
         assert conversation(client, emma) == [("guest", "What time is check-in?")]  # niciun răspuns inventat
-        (notification,) = client.get("/notifications").json()
-        assert notification["level"] == "warning" and "reply manually" in notification["title"]
-        assert "model unavailable" in notification["body"]
+        (answer,) = client.get("/answers").json()
+        assert answer["question"] == "What time is check-in?"
+        assert "model unavailable" in answer["context_note"]
         assert last_run(client)["status"] == "error"
 
         # Fluxurile fără LLM merg mai departe.

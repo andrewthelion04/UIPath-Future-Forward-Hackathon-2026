@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.core.contracts.events import IssueReported
+from app.core.contracts.events import GuestMessageReceived, IssueReported
 from app.core.feature_context import FeatureContext
 from app.features.f2_incidents.events import (
     EstimateReady,
@@ -37,9 +37,14 @@ def register(ctx: FeatureContext) -> None:
     ctx.subscribe(SimTaskDue, service.on_sim_task)
     ctx.subscribe(IncidentTaskCompleted, service.on_task_completed)
     ctx.subscribe(IncidentTimeout, service.on_timeout)
+    # Conversația cu oaspetele aparține copilotului; F2 află doar răspunsul la oferta lui
+    # și faptul că oaspetele e activ (termenul ofertei se prelungește).
+    ctx.on_guest_offer_answered(service.on_guest_offer_answered)
+    ctx.subscribe(GuestMessageReceived, service.on_guest_message)
     ctx.on_decision(APPROVAL_KIND, service.on_decision)
     ctx.on_decision(CLOSURE_KIND, service.on_closure_decision)
 
     for purpose, policy in POLICIES.items():
         ctx.register_mock_llm_policy(purpose, policy)
     ctx.include_router(build_router(service))
+    ctx.on_quiesce(service.stop_background)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,13 +32,22 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._tx_depth = 0
+        self.on_change: Callable[[], None] | None = None
+        self._tx_changed = False
         self._conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
-            return self._conn.execute(sql, params)
+            before = self._conn.total_changes
+            cursor = self._conn.execute(sql, params)
+            changed = self._conn.total_changes != before
+            if changed and self._tx_depth:
+                self._tx_changed = True
+            elif changed and self.on_change:
+                self.on_change()
+            return cursor
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
         with self._lock:
@@ -65,6 +75,7 @@ class Database:
                 return
             self._conn.execute("BEGIN IMMEDIATE")
             self._tx_depth = 1
+            self._tx_changed = False
             try:
                 yield
             except BaseException:
@@ -72,8 +83,24 @@ class Database:
                 raise
             else:
                 self._conn.execute("COMMIT")
+                if self._tx_changed and self.on_change:
+                    self.on_change()
             finally:
                 self._tx_depth = 0
+                self._tx_changed = False
+
+    def ensure_column(self, table: str, column: str, definition: str) -> bool:
+        """Adaugă o coloană lipsă pe o bază existentă (`CREATE TABLE IF NOT EXISTS` nu o face).
+
+        Doar pentru adăugări: coloana trebuie să fie opțională sau să aibă o valoare implicită.
+        Întoarce True dacă a adăugat-o.
+        """
+        with self._lock:
+            existing = {row["name"] for row in self._conn.execute(f'PRAGMA table_info("{table}")')}
+            if not existing or column in existing:
+                return False  # tabelul nu există încă (îl creează schema) sau coloana e deja acolo
+            self._conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {definition}')
+            return True
 
     def table_names(self) -> list[str]:
         rows = self.query(

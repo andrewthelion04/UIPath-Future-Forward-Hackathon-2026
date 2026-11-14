@@ -7,7 +7,7 @@ request cu `?wait=true` duce fluxul până la următoarea decizie a hostului.
 from __future__ import annotations
 
 import re
-from datetime import time
+from datetime import time, timedelta
 
 import pytest
 
@@ -126,7 +126,16 @@ def test_no_guest_message_when_the_fix_is_done_before_arrival(client):
 
 
 def test_relocation_is_not_offered_without_a_compatible_free_property(client):
-    report(client, "Brasov Mountain View Loft", "Water is leaking under the kitchen sink.")
+    # Toate celelalte proprietăți sunt ocupate pe durata sejurului lui Lukas.
+    container = client.app.state.container
+    today = container.clock.today()
+    for prop in client.get("/properties").json():
+        if prop["name"] != "Calea Victoriei Apartment":
+            client.portal.call(
+                container.calendar.set_availability, prop["id"], today, today + timedelta(days=3), False
+            )
+
+    report(client, "Calea Victoriei Apartment", "Water is leaking under the kitchen sink.")
 
     (approval,) = pending(client)
     assert [o["key"] for o in approval["options"]] == ["remediate"]
@@ -148,6 +157,10 @@ def test_relocation_accepted_by_the_guest_then_closed_by_the_host(client):
 
     incident = only_incident(client)
     assert incident["status"] == "relocated" and incident["guest_answer"] == "accept"
+    moved = client.get(f"/bookings/{lukas['id']}").json()
+    assert moved["property_id"] == target["id"]
+    assert client.post("/integrations/mock/sync").status_code == 200
+    assert client.get(f"/bookings/{lukas['id']}").json()["property_id"] == target["id"]
     # Oaspetele a primit exact textele din aprobare: oferta, apoi confirmarea.
     assert messages(client, lukas) == [
         quoted(relocate, "Guest will receive:"),

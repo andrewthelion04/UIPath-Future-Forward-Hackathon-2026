@@ -35,6 +35,7 @@ class SeedProperty(BaseModel):
     amenities: list[str] = Field(default_factory=list)
     base_price: float = Field(gt=0)
     currency: str = "EUR"
+    listing_url: str | None = None
 
 
 class SeedReservation(BaseModel):
@@ -147,6 +148,16 @@ class MockWorld:
 
     def init_schema(self) -> None:
         self._db.script(SCHEMA_FILE.read_text(encoding="utf-8"))
+
+    def move_reservation(self, external_id: str, property_external_id: str) -> None:
+        with self._db.transaction():
+            row = self._db.query_one("SELECT data FROM mock_reservations WHERE external_id=?", (external_id,))
+            if row is None:
+                raise ValueError("Mock reservation not found")
+            data = from_json(row["data"])
+            data["property_external_id"] = property_external_id
+            self._db.execute("UPDATE mock_reservations SET data=?, property_external_id=? WHERE external_id=?",
+                             (to_json(data), property_external_id, external_id))
 
     def load(self, seed: MockWorldSeed, today: date) -> None:
         """Înlocuiește lumea simulată cu cea din seed, cu date relative la `today`."""

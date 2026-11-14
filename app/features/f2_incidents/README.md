@@ -4,9 +4,9 @@ Sesizare → triere → agentul întreabă mentenanța cât durează → propune
 
 | | |
 |---|---|
-| **Ascultă** | `IssueReported`; `ApprovalDecided` pentru aprobările proprii (`incident_resolution`, `incident_closure`); evenimentele interne din `events.py` |
+| **Ascultă** | `IssueReported`; `ApprovalDecided` pentru aprobările proprii (`incident_resolution`, `incident_closure`); `GuestOfferAnswered` (răspunsul oaspetelui la oferta de relocare, venit din conversație); `GuestMessageReceived` (doar ca să prelungească termenul ofertei); evenimentele interne din `events.py` |
 | **Emite** | `ApprovalRequested`, `GuestMessageSent`, `IssueReported` (din `POST /incidents/report`); private: `IncidentDecided`, `IncidentResolved` și pașii interni |
-| **Date deținute** | `f2_incidents`, `f2_incident_reports`, `f2_staff_messages`, `f2_tasks` |
+| **Date deținute** | `f2_incidents`, `f2_incident_reports`, `f2_staff_messages`, `f2_tasks`; publică starea pentru oaspete în `guest_topics` (nucleu) |
 | **Porturi** | `calendar`, `channel`, `llm` (prin `ctx.agent`) |
 | **Agenți** | `f2_incidents.triage`, `.staff_liaison`, `.proposal`, `.closure`, `.sim_staff` (doar simulare); prompturile în `prompts/`, politicile mock în `mock_llm.py` |
 
@@ -46,6 +46,7 @@ Toate primesc `?wait=true`, ca simulatorul.
 - *Guest chat* → Lukas: „The air conditioning is broken” → mentenanța estimează ~30 h → recomandare: relocare la Herastrau → hostul aprobă → oaspetele (simulat) acceptă → reparația → aprobarea închiderii.
 - *Staff report* → Calea Victoriei: „Water is leaking under the kitchen sink.” → ~2 h → recomandare: remediere, cu scuzele și estimarea pentru oaspete.
 - Aceeași problemă raportată din nou (chiar în alte cuvinte) se atașează incidentului deschis.
-- La demo, **nu răspundeți la oferta de relocare din chatul oaspetelui**: chatul aparține F3; răspunsul vine din simulare.
+- Cu `F2_SIM_GUEST_ANSWER=off`, oaspetele răspunde la ofertă din chat: copilotul (F3) îi răspunde la întrebări din ce publică F2 în `guest_topics` (detaliile proprietății, linkul anunțului, estimarea aprobată) și transmite un „da” sau „nu” clar prin `GuestOfferAnswered`. Cu valoarea implicită `accept`, răspunsul vine din simulare.
+- Dacă discuția a fost predată hostului, pagina F2 are două butoane pe incidentele în `awaiting_guest`, cu care hostul notează ce a hotărât oaspetele.
 
 Teste: `python manage.py test app/features/f2_incidents`

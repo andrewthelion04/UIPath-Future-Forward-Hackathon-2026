@@ -1,7 +1,7 @@
 """Citirea și scrierea datelor interne despre host, proprietăți, rezervări și personal.
 
-Proprietățile și rezervările sunt oglinda internă a PMS-ului și se scriu doar prin
-`SyncService`. Feature-urile citesc de aici.
+Datele importate sunt oglinda internă a PMS-ului. Editările hostului sunt păstrate
+separat și aplicate la citirea proprietăților; sincronizarea nu le suprascrie.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ def _property(row: dict[str, Any]) -> Property:
         base_price=row["base_price"],
         currency=row["currency"],
         pms_provider=row["pms_provider"],
+        listing_url=row.get("listing_url"),
     )
 
 
@@ -71,22 +72,47 @@ class WorldRepository:
     # --- Proprietăți ---------------------------------------------------------------
 
     def list_properties(self) -> list[Property]:
-        return [_property(r) for r in self._db.query("SELECT * FROM properties ORDER BY name")]
+        return sorted([self._with_overrides(_property(r)) for r in self._db.query("SELECT * FROM properties ORDER BY name")], key=lambda p: p.name)
 
     def get_property(self, property_id: str) -> Property | None:
         row = self._db.query_one("SELECT * FROM properties WHERE id = ?", (property_id,))
-        return _property(row) if row else None
+        return self._with_overrides(_property(row)) if row else None
+
+    def _with_overrides(self, prop: Property) -> Property:
+        row = self._db.query_one("SELECT fields FROM property_overrides WHERE property_id=?", (prop.id,))
+        return Property.model_validate({**prop.model_dump(), **from_json(row["fields"], {})}) if row else prop
+
+    def edit_property(self, property_id: str, fields: dict[str, Any]) -> Property:
+        with self._db.transaction():
+            current = self.get_property(property_id)
+            if current is None:
+                raise LookupError("Property not found")
+            row = self._db.query_one("SELECT fields FROM property_overrides WHERE property_id=?", (property_id,))
+            merged = {**(from_json(row["fields"], {}) if row else {}), **fields}
+            self._db.execute(
+                "INSERT INTO property_overrides VALUES (?, ?, ?) ON CONFLICT(property_id) "
+                "DO UPDATE SET fields=excluded.fields, updated_at=excluded.updated_at",
+                (property_id, to_json(merged), utcnow().isoformat()),
+            )
+        return self.get_property(property_id)
+
+    def clear_property_overrides(self, property_id: str) -> Property:
+        if self.get_property(property_id) is None:
+            raise LookupError("Property not found")
+        self._db.execute("DELETE FROM property_overrides WHERE property_id=?", (property_id,))
+        return self.get_property(property_id)
 
     def upsert_property(self, prop: Property) -> None:
         self._db.execute(
             "INSERT INTO properties (id, name, city, address, bedrooms, max_guests, amenities, "
-            "base_price, currency, pms_provider, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "base_price, currency, pms_provider, listing_url, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET name = excluded.name, city = excluded.city, "
             "address = excluded.address, bedrooms = excluded.bedrooms, "
             "max_guests = excluded.max_guests, amenities = excluded.amenities, "
             "base_price = excluded.base_price, currency = excluded.currency, "
-            "pms_provider = excluded.pms_provider, updated_at = excluded.updated_at",
+            "pms_provider = excluded.pms_provider, listing_url = excluded.listing_url, "
+            "updated_at = excluded.updated_at",
             (
                 prop.id,
                 prop.name,
@@ -98,6 +124,7 @@ class WorldRepository:
                 prop.base_price,
                 prop.currency,
                 prop.pms_provider.value,
+                prop.listing_url,
                 utcnow().isoformat(),
             ),
         )

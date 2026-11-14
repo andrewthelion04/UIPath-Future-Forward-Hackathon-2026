@@ -9,6 +9,7 @@ Garanții:
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any, Literal
 
@@ -19,6 +20,8 @@ from app.core.db import Database, from_json, to_json
 from app.core.event_bus import EventBus, Handler, current_correlation_id
 from app.core.ids import new_id
 from app.core.notifications import NotificationService
+
+logger = logging.getLogger("staypilot.approvals")
 
 DEFAULT_OPTION = ApprovalOption(key="approve", label="Approve")
 
@@ -181,21 +184,46 @@ class ApprovalService:
                 f"approval {approval_id} was already {current.status}"
                 + (f" ({current.chosen_option})" if current.chosen_option else "")
             )
-        await self._bus.publish(
-            ApprovalDecided(
-                approval_id=current.id,
-                feature=current.feature,
-                kind=current.kind,
-                decision=status,
-                option=option,
-                note=note,
-                decided_by=decided_by,
-                payload=current.payload,
-                correlation_id=current.correlation_id,
-                source="host",
+        try:
+            await self._bus.publish(
+                ApprovalDecided(
+                    approval_id=current.id,
+                    feature=current.feature,
+                    kind=current.kind,
+                    decision=status,
+                    option=option,
+                    note=note,
+                    decided_by=decided_by,
+                    payload=current.payload,
+                    correlation_id=current.correlation_id,
+                    source="host",
+                )
             )
-        )
+        except Exception:
+            # Fără eveniment, feature-ul nu află decizia. O readucem în `pending`, ca hostul
+            # (sau un retry) să o poată aplica din nou; altfel ar rămâne aprobată fără efect.
+            self._db.execute(
+                "UPDATE approvals SET status = 'pending', chosen_option = NULL, decided_by = NULL, "
+                "decision_note = NULL, decided_at = NULL WHERE id = ? AND status = ?",
+                (approval_id, status),
+            )
+            logger.exception("Publishing the decision of %s failed; it is pending again", approval_id)
+            raise
         return current, True
+
+    def withdraw(self, approval_id: str, *, reason: str = "") -> bool:
+        """Retrage o aprobare încă nedecisă, fiindcă nu mai descrie realitatea.
+
+        Dispare din inbox și nu mai poate fi decisă (`decide` întoarce conflict). Nu se publică
+        niciun eveniment: feature-ul care o retrage știe deja de ce. Întoarce False dacă
+        aprobarea fusese deja decisă sau retrasă.
+        """
+        cursor = self._db.execute(
+            "UPDATE approvals SET status = 'withdrawn', decided_by = 'system', "
+            "decision_note = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+            (reason or None, utcnow().isoformat(), approval_id),
+        )
+        return cursor.rowcount > 0
 
     def on_decision(
         self, feature: str, kind: str, handler: Handler, *, timeout_s: float | None = None
@@ -207,8 +235,34 @@ class ApprovalService:
             name=f"{feature}.on_decision[{kind}]",
             feature=feature,
             timeout_s=timeout_s,
-            predicate=lambda event: event.feature == feature and event.kind == kind,
+            predicate=lambda event: (
+                event.feature == feature and event.kind == kind and self._is_authoritative(event)
+            ),
         )
+
+    def _is_authoritative(self, event: ApprovalDecided) -> bool:
+        """Un `ApprovalDecided` contează doar dacă aprobarea salvată spune același lucru.
+
+        Decizia se salvează înainte de publicare, deci un eveniment legitim trece mereu.
+        Un eveniment construit în altă parte (sau rămas dintr-o stare veche) nu execută nimic.
+        """
+        row = self._db.query_one(
+            "SELECT feature, kind, status, chosen_option FROM approvals WHERE id = ?",
+            (event.approval_id,),
+        )
+        matches = (
+            row is not None
+            and row["feature"] == event.feature
+            and row["kind"] == event.kind
+            and row["status"] == event.decision
+            and row["chosen_option"] == event.option
+        )
+        if not matches:
+            logger.warning(
+                "Ignoring ApprovalDecided for %s: it does not match the stored approval",
+                event.approval_id,
+            )
+        return matches
 
     # --- Citire --------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ reușit, deci un feature care cade la încărcare nu lasă nimic pe jumătate î
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -19,15 +19,17 @@ from app.core.agent.loop import AgentRunner
 from app.core.approvals import ApprovalService
 from app.core.channel_gateway import ChannelGateway
 from app.core.clock import Clock
-from app.core.contracts.events import Event
+from app.core.contracts.events import Event, GuestOfferAnswered
 from app.core.contracts.models import Notification
 from app.core.conversation_log import ConversationLog
 from app.core.db import Database
 from app.core.event_bus import EventBus, Handler
+from app.core.guest_topics import GuestTopics
 from app.core.id_mapper import IdMapper
 from app.core.notifications import NotificationService
 from app.core.sync_service import SyncService
 from app.core.world_repo import WorldRepository
+from app.core.host_answers import HostAnswers
 from app.ports.calendar import CalendarPort
 from app.ports.llm import LLMPort, MockPolicy
 from app.ports.market import MarketDataPort
@@ -59,9 +61,11 @@ class FeatureContext:
     approvals: ApprovalService
     notifications: NotificationService
     channel: ChannelGateway
+    host_answers: HostAnswers
     calendar: CalendarPort
     world: WorldRepository
     conversations: ConversationLog
+    guest_topics: GuestTopics
     ids: IdMapper
     sync: SyncService
     pms: PmsRegistry
@@ -72,6 +76,7 @@ class FeatureContext:
     agent: AgentRunner
     _add_router: Callable[[APIRouter], None]
     _add_mock_policy: Callable[[str, MockPolicy], None]
+    _add_quiesce_hook: Callable[[Callable[[], Awaitable[None]]], None] = lambda hook: None
     _pending: list[Callable[[], None]] = field(default_factory=list)
 
     # --- Înregistrări (aplicate de loader după un `register` reușit) ---------------
@@ -93,6 +98,20 @@ class FeatureContext:
             lambda: self.approvals.on_decision(self.feature, kind, handler, timeout_s=timeout_s)
         )
 
+    def on_guest_offer_answered(self, handler: Handler, *, timeout_s: float | None = None) -> None:
+        """Primește răspunsurile oaspeților la ofertele publicate de acest feature."""
+        name = f"{self.feature}.{getattr(handler, '__name__', 'handler')}"
+        self._pending.append(
+            lambda: self.bus.subscribe(
+                GuestOfferAnswered,
+                handler,
+                name=name,
+                feature=self.feature,
+                timeout_s=timeout_s,
+                predicate=lambda event: event.feature == self.feature,
+            )
+        )
+
     def include_router(self, router: APIRouter) -> None:
         """Adaugă endpointurile proprii ale feature-ului în API."""
         self._pending.append(lambda: self._add_router(router))
@@ -100,6 +119,15 @@ class FeatureContext:
     def register_mock_llm_policy(self, purpose: str, policy: MockPolicy) -> None:
         """Comportamentul determinist al LLM-ului mock pentru agentul `purpose`."""
         self._pending.append(lambda: self._add_mock_policy(purpose, policy))
+
+    def on_quiesce(self, hook: Callable[[], Awaitable[None]]) -> None:
+        """Munca de fundal a feature-ului (sarcini `asyncio` proprii, în afara event bus-ului).
+
+        Hook-ul e apelat înainte ca baza să fie închisă (shutdown) sau recreată (resetul
+        lumii) și trebuie să își termine ori să își oprească sarcinile. Poate fi apelat de
+        mai multe ori.
+        """
+        self._pending.append(lambda: self._add_quiesce_hook(hook))
 
     def commit(self) -> None:
         pending, self._pending = self._pending, []

@@ -55,7 +55,10 @@ def link_all(client: httpx.Client, listings: dict[str, str]) -> list[str]:
 def main() -> int:
     api_url = os.environ.get("STAYPILOT_API_URL", "http://127.0.0.1:8000").rstrip("/")
     try:
-        with httpx.Client(base_url=api_url, timeout=10) as client:
+        # Tokenul opțional al API-ului (`API_TOKEN` în `.env`-ul backendului), dat prin mediu.
+        token = os.environ.get("STAYPILOT_API_TOKEN") or os.environ.get("API_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        with httpx.Client(base_url=api_url, timeout=10, headers=headers) as client:
             lines = link_all(client, load_listings())
     except httpx.HTTPError as exc:
         print(f"Cannot reach the API at {api_url}: {exc}. Start it with: python manage.py api")

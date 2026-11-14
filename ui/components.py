@@ -54,15 +54,28 @@ def act(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         return None
 
 
-def flash(message: str) -> None:
-    """Mesaj de confirmare care supraviețuiește unui `st.rerun()`."""
-    st.session_state["_flash"] = message
+def flash(message: str, level: str = "success") -> None:
+    """Mesaj (`success` sau `warning`) care supraviețuiește unui `st.rerun()`."""
+    st.session_state["_flash"] = (level, message)
+
+
+def flash_outcome(result: dict, done: str, still_running: str) -> None:
+    """Confirmare pentru un request cu `?wait=true`.
+
+    `completed=False` înseamnă că API-ul a încetat să aștepte, nu că fluxul s-a terminat:
+    munca merge mai departe în fundal, deci nu anunțăm „gata”.
+    """
+    if result.get("completed") is False:
+        flash(still_running, "warning")
+    else:
+        flash(done)
 
 
 def show_flash() -> None:
-    message = st.session_state.pop("_flash", None)
-    if message:
-        st.success(message)
+    saved = st.session_state.pop("_flash", None)
+    if saved:
+        level, message = saved if isinstance(saved, tuple) else ("success", saved)
+        (st.warning if level == "warning" else st.success)(message)
 
 
 def status_badge(status: str | None) -> None:

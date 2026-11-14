@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from ui import api_client as api  # noqa: E402
+from ui.live_updates import live_status  # noqa: E402
 
 VIEWS = ROOT / "ui" / "views"
 FEATURES = ROOT / "app" / "features"
@@ -53,6 +54,8 @@ def feature_pages() -> list:
 
 
 pending = count("/approvals")
+answer_count = count("/answers")
+pending = (pending or 0) + (answer_count or 0)
 unread = count("/notifications", unread_only=True)
 
 navigation = st.navigation(
@@ -61,10 +64,11 @@ navigation = st.navigation(
             st.Page(str(VIEWS / "simulator.py"), title="Simulator", icon=":material/play_circle:", default=True),
         ],
         "Host": [
-            st.Page(str(VIEWS / "approvals.py"), title=with_count("Approvals", pending), url_path="approvals", icon=":material/fact_check:"),
+            st.Page(str(VIEWS / "approvals.py"), title=with_count("Approvals / Answers", pending), url_path="approvals", icon=":material/fact_check:"),
             st.Page(str(VIEWS / "notifications.py"), title=with_count("Notifications", unread), url_path="notifications", icon=":material/notifications:"),
         ],
         "Inspect": [
+            st.Page(str(VIEWS / "agent_dashboard.py"), title="Agent dashboard", url_path="agent-dashboard", icon=":material/monitoring:"),
             st.Page(str(VIEWS / "agent_timeline.py"), title="Agent timeline", icon=":material/timeline:"),
             st.Page(str(VIEWS / "events.py"), title="Events", icon=":material/bolt:"),
             st.Page(str(VIEWS / "world.py"), title="World data", icon=":material/database:"),
@@ -89,5 +93,6 @@ with st.sidebar:
             if not feature["loaded"]:
                 st.warning(f"{feature['name']} is not loaded: {feature['error']}")
     st.button("Refresh", icon=":material/refresh:", width="stretch")
+    live_status()
 
 navigation.run()

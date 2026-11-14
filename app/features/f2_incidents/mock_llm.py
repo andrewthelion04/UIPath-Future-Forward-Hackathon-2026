@@ -35,7 +35,25 @@ def words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOP_WORDS}
 
 
+# Locul problemei: aceeași defecțiune în două încăperi înseamnă două reparații.
+PLACES = {
+    "kitchen": ("kitchen", "dishwasher", "oven", "fridge", "stove"),
+    "bathroom": ("bathroom", "shower", "bathtub", "toilet", "washbasin"),
+    "bedroom": ("bedroom",),
+    "living room": ("living room", "lounge", "sofa"),
+    "outside": ("balcony", "terrace", "garden", "hallway", "staircase", "entrance"),
+}
+
+
+def places_of(text: str) -> set[str]:
+    lowered = text.lower()
+    return {place for place, hints in PLACES.items() if any(hint in lowered for hint in hints)}
+
+
 def same_problem(a: str, b: str) -> bool:
+    place_a, place_b = places_of(a), places_of(b)
+    if place_a and place_b and not place_a & place_b:
+        return False  # încăperi diferite: probleme diferite, chiar dacă sunt de același tip
     category_a, category_b = category_of(a), category_of(b)
     if category_a and category_a == category_b:
         return True
@@ -159,12 +177,13 @@ def proposal_policy(request: ChatRequest) -> ChatMessage:
     prop, problem = c.get("property"), str(c.get("problem") or "")
     eta = _eta_text(c)
     target = c.get("relocation_target") or {}
+    listing = f" Here is the place: {target['listing_url']}" if target.get("listing_url") else ""
     texts = {
         "relocation_offer": (
             f"Hi {name}, we are really sorry: there is a problem at {prop} ({problem}). Our "
             f"maintenance team expects to fix it {eta}. So that your stay is not affected, we can "
             f"move you to {target.get('name')} ({target.get('address')}) for the rest of your "
-            "stay, at no extra cost. Would you like to move? Just reply to this message."
+            f"stay, at no extra cost.{listing} Would you like to move? Just reply to this message."
         ),
         "relocation_accepted": (
             f"Great, {name}! Your stay continues at {target.get('name')}, {target.get('address')}. "

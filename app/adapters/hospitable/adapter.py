@@ -199,6 +199,9 @@ class HospitableAdapter:
 
     # --- MessagingPort -------------------------------------------------------------
 
+    async def move_reservation(self, booking_id: str, property_id: str) -> None:
+        raise CapabilityNotSupported("Reservation moves are not implemented for Hospitable")
+
     async def send_message(self, booking_id: str, body: str) -> SentMessage:
         reservation_uuid = self._ids.to_external(PROVIDER, RESERVATION, booking_id)
         if reservation_uuid is None:

@@ -118,6 +118,7 @@ class OwnerRezAdapter:
             receive_webhooks=bool(access_token),
             read_calendar=True,
             write_prices=True,
+            move_reservations=True,
         )
         self._ids = ids
         self._property_pricing: dict[str, tuple[str, float]] = {}
@@ -151,7 +152,11 @@ class OwnerRezAdapter:
                 break
             body = await self._request("GET", url, params=query)
             page = body.get("items") if isinstance(body, dict) else body
-            items.extend(item for item in page or [] if isinstance(item, dict))
+            if not isinstance(page, list):
+                # Un răspuns 200 fără listă nu înseamnă „nimic”: ar arăta nopți libere sau
+                # rezervări dispărute. Îl tratăm ca eroare a PMS-ului.
+                raise PmsError(f"OwnerRez GET {path} returned no item list")
+            items.extend(item for item in page if isinstance(item, dict))
             # `next_page_url` conține deja toți parametrii paginii următoare.
             url = body.get("next_page_url") if isinstance(body, dict) else None
             query = None
@@ -227,6 +232,23 @@ class OwnerRezAdapter:
         return reservations
 
     # --- MessagingPort -------------------------------------------------------------
+
+    async def move_reservation(self, booking_id: str, property_id: str) -> None:
+        external_id = self._external(RESERVATION, booking_id)
+        target_id = int(self._external(PROPERTY, property_id))
+        current = await self._request("GET", f"/v2/bookings/{external_id}")
+        if _status(current.get("status")) == BookingStatus.CANCELLED:
+            raise PmsError("Cannot move a cancelled OwnerRez booking")
+        if current.get("property_id") == target_id:
+            return  # o scriere anterioară poate fi deja confirmată de PMS
+        # Nu generăm taxe noi și nu rescriem datele, oaspeții sau canalul.
+        await self._request("PATCH", f"/v2/bookings/{external_id}", json={"property_id":target_id})
+        confirmed = await self._request("GET", f"/v2/bookings/{external_id}")
+        if (confirmed.get("property_id") != target_id
+                or confirmed.get("arrival") != current.get("arrival")
+                or confirmed.get("departure") != current.get("departure")
+                or _status(confirmed.get("status")) == BookingStatus.CANCELLED):
+            raise PmsError("OwnerRez relocation could not be verified; review the booking manually")
 
     async def send_message(self, booking_id: str, body: str) -> SentMessage:
         if not self.capabilities.send_messages:

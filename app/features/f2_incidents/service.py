@@ -24,11 +24,18 @@ from typing import Any
 
 from app.core.channel_gateway import ChannelError
 from app.core.clock import utcnow
-from app.core.contracts.events import ApprovalDecided, Event, IssueReported
+from app.core.contracts.events import (
+    ApprovalDecided,
+    Event,
+    GuestMessageReceived,
+    GuestOfferAnswered,
+    IssueReported,
+)
 from app.core.contracts.models import ApprovalOption, Booking, BookingStatus, Property, StaffMember
 from app.core.feature_context import FeatureContext
 from app.features.f2_incidents import templates
 from app.features.f2_incidents.agents import IncidentAgents
+from app.features.f2_incidents import guest_view
 from app.features.f2_incidents.events import (
     EstimateReady,
     GuestAnsweredRelocation,
@@ -53,6 +60,7 @@ from app.features.f2_incidents.models import (
 )
 from app.features.f2_incidents.repo import IncidentRepository
 from app.features.f2_incidents.rules import (
+    covers_free_nights,
     explain_recommendation,
     fix_in_time,
     format_hours,
@@ -146,7 +154,8 @@ class ProposalFacts:
             ),
             "relocation_target": (
                 {"name": self.candidate.name, "address": self.candidate.address,
-                 "sleeps": self.candidate.max_guests, "bedrooms": self.candidate.bedrooms}
+                 "sleeps": self.candidate.max_guests, "bedrooms": self.candidate.bedrooms,
+                 "listing_url": self.candidate.listing_url}
                 if self.candidate else None
             ),
             "messages_needed": sorted(self.needed_messages()),
@@ -167,6 +176,52 @@ class IncidentService:
         self._property_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._incident_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._background: set[asyncio.Task[None]] = set()
+        self.repo.on_change = self._sync_guest_topic
+
+    async def stop_background(self) -> None:
+        """Oprește pașii simulați aflați în pauză (shutdown sau resetul lumii)."""
+        tasks = list(self._background)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    # --- Starea pentru oaspete (citită de cine vorbește cu el) -----------------------------
+
+    def _sync_guest_topic(self, incident: Incident) -> None:
+        """Publică ce are voie să afle oaspetele despre incident, după fiecare schimbare."""
+        ctx = self._ctx
+        topic = guest_view.topic_id(ctx.feature, incident.id)
+        try:
+            booking = self._live_booking(incident)
+            target = (
+                ctx.world.get_property(incident.relocation_property_id)
+                if incident.relocation_property_id
+                else None
+            )
+            view = guest_view.guest_view(
+                incident, booking, self._property_name(incident.property_id), target, ctx.clock.today()
+            )
+            if view is None or booking is None:
+                ctx.guest_topics.close(topic)
+                return
+            if view.offer is not None:
+                # Un răspuns deja dat de oaspete (încă neprelucrat) nu se rescrie ca „în așteptare”.
+                current = ctx.guest_topics.get(topic)
+                if current and current.offer and current.offer.status in ("accepted", "declined"):
+                    view.offer.status = current.offer.status
+            ctx.guest_topics.publish(
+                topic,
+                booking_id=booking.id,
+                feature=ctx.feature,
+                kind=guest_view.TOPIC_KIND,
+                title=view.title,
+                facts=view.facts,
+                offer=view.offer,
+                valid_until=view.valid_until,
+            )
+        except Exception:  # starea publică nu are voie să oprească fluxul incidentului
+            logger.exception("Could not publish the guest view of incident %s", incident.id)
 
     # --- Citire ---------------------------------------------------------------------------
 
@@ -305,8 +360,11 @@ class IncidentService:
         world = self._ctx.world
         if world.get_property(property_id) is None:
             raise LookupError(f"unknown property {property_id}")
-        if booking_id and world.get_booking(booking_id) is None:
+        booking = world.get_booking(booking_id) if booking_id else None
+        if booking_id and booking is None:
             raise LookupError(f"unknown booking {booking_id}")
+        if booking is not None and booking.property_id != property_id:
+            raise ValueError(f"booking {booking_id} is not a stay at property {property_id}")
         staff = {m.id: m for m in world.list_staff()}
         if staff_id and staff_id not in staff:
             raise LookupError(f"unknown staff member {staff_id}")
@@ -375,8 +433,14 @@ class IncidentService:
             ("guest_deadline", "awaiting_guest", "guest"),
         ):
             for incident in self.repo.with_deadline_before(column, status, now):
+                deadline = getattr(incident, column)
                 self.repo.update(incident.id, **{column: None})  # o singură dată
-                await self._emit(IncidentTimeout, incident, kind=kind)
+                try:
+                    await self._emit(IncidentTimeout, incident, kind=kind)
+                except Exception:
+                    # Fără eveniment, incidentul ar rămâne blocat: termenul se reia data viitoare.
+                    self.repo.update(incident.id, **{column: deadline})
+                    raise
                 fired += 1
         return fired
 
@@ -395,16 +459,21 @@ class IncidentService:
             )
             return
         today = ctx.clock.today()
-        booking = (
-            ctx.world.get_booking(event.booking_id)
-            if event.booking_id
-            else ctx.world.active_booking_for_property(prop.id, today)
-        )
+        booking = ctx.world.get_booking(event.booking_id) if event.booking_id else None
+        if booking is not None and booking.property_id != prop.id:
+            # Sesizarea numește un sejur de la altă proprietate: nu mutăm și nu anunțăm
+            # oaspetele greșit. Folosim sejurul real al proprietății raportate.
+            logger.warning(
+                "Issue at %s names booking %s of another property; ignoring it", prop.id, booking.id
+            )
+            booking = None
+        if booking is None:
+            booking = ctx.world.active_booking_for_property(prop.id, today)
 
         async with self._property_locks[prop.id]:
             target = await self._triage(event, prop)
             if target is not None:
-                self._attach(target, event, prop)
+                await self._attach(target, event, prop)
                 return
             incident = self.repo.create(
                 property_id=prop.id,
@@ -421,7 +490,7 @@ class IncidentService:
                 reported_via=event.reported_via,
                 reporter=event.reporter,
                 severity=event.severity,
-                booking_id=event.booking_id,
+                booking_id=booking.id if booking else None,
             )
         await self._emit(StaffContactRequested, incident)
 
@@ -448,7 +517,7 @@ class IncidentService:
         target_id = parse_triage_result(outcome.result.result, outcome.open_ids)
         return self.repo.get(target_id) if target_id else None
 
-    def _attach(self, incident: Incident, event: IssueReported, prop: Property) -> None:
+    async def _attach(self, incident: Incident, event: IssueReported, prop: Property) -> None:
         self.repo.add_report(
             incident.id,
             description=event.description,
@@ -467,6 +536,36 @@ class IncidentService:
             property_id=prop.id,
             booking_id=incident.booking_id,
         )
+        await self._reopen_closure(incident.id, event, prop)
+
+    async def _reopen_closure(self, incident_id: str, event: IssueReported, prop: Property) -> None:
+        """Un raport nou după „reparat”: cererea de închidere nu mai descrie realitatea."""
+        async with self._incident_locks[incident_id]:
+            incident = self.repo.get(incident_id)
+            if (
+                incident is None
+                or incident.closure_approval_id is None
+                or incident.status not in ("remediation_scheduled", "relocated")
+            ):
+                return
+            if not self._ctx.approvals.withdraw(
+                incident.closure_approval_id,
+                reason="A new report arrived after the repair was marked done.",
+            ):
+                return  # hostul a decis deja: decizia lui rămâne
+            incident = self.repo.update(incident.id, closure_approval_id=None, closure_message=None)
+            task = await self._create_task(
+                incident, f"Follow-up: reported again after the repair: {event.description}"
+            )
+            self._ctx.notify(
+                f"Incident at {prop.name} is not ready to close",
+                f'{event.reporter or event.reported_via} reported after the repair: "{event.description}"\n'
+                "The request to close the incident was withdrawn and follow-up task "
+                f"{task.id} was created for {task.staff_name or 'nobody (unassigned)'}.",
+                level="warning",
+                property_id=prop.id,
+                booking_id=incident.booking_id,
+            )
 
     # --- Conversația cu mentenanța -----------------------------------------------------------
 
@@ -584,6 +683,7 @@ class IncidentService:
             description=incident.description,
             message=questions[-1].body,
             round_index=round_index,
+            situation=scripted_staff_reply(incident.description, round_index),
         )
         text = text or scripted_staff_reply(incident.description, round_index)
         await self.receive_staff_reply(
@@ -667,7 +767,9 @@ class IncidentService:
         name, prop, problem = booking.guest_name, facts.property_name, facts.description
         target = facts.candidate
         values = {
-            "relocation_offer": templates.relocation_offer(name, prop, problem, target.name, target.address)
+            "relocation_offer": templates.relocation_offer(
+                name, prop, problem, target.name, target.address, target.listing_url
+            )
             if target else None,
             "relocation_accepted": templates.relocation_accepted(name, target.name, target.address)
             if target else None,
@@ -807,8 +909,8 @@ class IncidentService:
     async def _find_relocation(
         self, booking: Booking, original: Property, today: date
     ) -> Property | None:
-        """Cea mai potrivită proprietate compatibilă, liberă pe restul sejurului."""
-        start, end = max(booking.check_in, today), booking.check_out
+        """Destinație compatibilă în același PMS, liberă pentru întreaga rezervare."""
+        start, end = booking.check_in, booking.check_out
         if (end - start).days <= 0:
             return None
         shared = set(original.amenities)
@@ -821,9 +923,17 @@ class IncidentService:
             key=lambda p: (-len(shared & set(p.amenities)), abs(p.base_price - original.base_price)),
         )
         for candidate in candidates:
-            if await self._is_free(candidate.id, start, end):
+            if self._can_host_relocation(candidate) and await self._is_free(candidate.id, start, end):
                 return candidate
         return None
+
+    def _can_host_relocation(self, candidate: Property) -> bool:
+        """Ținta nu are incident deschis și PMS-ul permite mutarea rezervării."""
+        if self.repo.open_for_property(candidate.id):
+            return False  # nu mutăm un oaspete într-o proprietate cu o problemă cunoscută
+        connection = self._ctx.pms.get(candidate.pms_provider)
+        # Fără blocare în calendar, ținta poate fi vândută altcuiva după confirmare.
+        return connection is not None and connection.capabilities.move_reservations
 
     async def _is_free(self, property_id: str, start: date, end: date) -> bool:
         try:
@@ -831,7 +941,7 @@ class IncidentService:
         except Exception as exc:  # calendar indisponibil: candidatul e sărit, nu blocăm fluxul
             logger.warning("Calendar check failed for %s: %s", property_id, exc)
             return False
-        return len(days) == (end - start).days and all(day.available for day in days)
+        return covers_free_nights(days, property_id, start, end)
 
     # --- Decizia hostului ------------------------------------------------------------------
 
@@ -878,10 +988,21 @@ class IncidentService:
 
     async def _offer_relocation(self, incident: Incident, booking: Booking, drafts: GuestDrafts) -> None:
         target_name = self._property_name(incident.relocation_property_id or "")
-        await self._message_guest(booking.id, drafts.relocation_offer)
+        if not await self._message_guest(booking.id, drafts.relocation_offer):
+            # Oaspetele nu a primit oferta: nu așteptăm (și nu simulăm) un răspuns la ea.
+            await self._propose_again(
+                incident,
+                "The relocation offer could not be delivered",
+                f"The offer for {target_name} did not reach {booking.guest_name}, so nothing "
+                "changed. A new proposal follows; approve it again once messaging works, or "
+                "choose the fix in place.",
+                level="error",
+            )
+            return
         incident = self.repo.update(
             incident.id,
             status="awaiting_guest",
+            guest_note=None,
             decided_option=OPTION_RELOCATE,
             guest_deadline=utc_now() + timedelta(minutes=self.settings.guest_answer_timeout_min),
             resolution=f"Relocation to {target_name} offered to the guest.",
@@ -906,6 +1027,7 @@ class IncidentService:
         incident = self.repo.update(
             incident.id,
             status="remediation_scheduled",
+            guest_note=None,
             decided_option=incident.decided_option or decided,
             resolution=f"Remediation approved. Contact: {who}.",
         )
@@ -952,6 +1074,34 @@ class IncidentService:
 
     # --- Răspunsul oaspetelui -------------------------------------------------------------
 
+    async def on_guest_offer_answered(self, event: GuestOfferAnswered) -> None:
+        """Oaspetele a răspuns la ofertă în conversație (prin cine vorbește cu el)."""
+        incident_id = guest_view.incident_id_of(self._ctx.feature, event.topic_id)
+        incident = self.repo.get(incident_id) if incident_id else None
+        if incident is None or incident.booking_id != event.booking_id:
+            logger.warning("Offer answer for an unknown incident topic: %s", event.topic_id)
+            return
+        try:
+            await self.answer_relocation(
+                incident.id, "accept" if event.choice == "accept" else "stay"
+            )
+        except ValueError as exc:  # oferta nu mai așteaptă un răspuns (timeout, propunere nouă)
+            logger.info("Offer answer ignored: %s", exc)
+            self._ctx.notify(
+                "A guest answered a relocation offer that is no longer open",
+                f"The guest chose '{event.choice}', but the offer had already been closed "
+                f"({incident.status}). Please follow up with the guest.",
+                level="warning",
+                property_id=incident.property_id,
+                booking_id=incident.booking_id,
+            )
+
+    async def on_guest_message(self, event: GuestMessageReceived) -> None:
+        """Un oaspete care scrie cât are o ofertă deschisă nu e trecut automat la „rămâne”."""
+        deadline = utc_now() + timedelta(minutes=self.settings.guest_answer_timeout_min)
+        for incident in self.repo.awaiting_guest_for_booking(event.booking_id):
+            self.repo.update(incident.id, guest_deadline=deadline)
+
     async def on_sim_guest_answer(self, event: SimGuestAnswerDue) -> None:
         incident = self.repo.get(event.incident_id)
         if incident is None or incident.status != "awaiting_guest":
@@ -984,40 +1134,95 @@ class IncidentService:
                 incident, decided=OPTION_RELOCATE, guest_message=drafts.relocation_declined
             )
 
+    async def _propose_again(
+        self, incident: Incident, title: str, body: str, *, level: str = "warning", uncertain: bool = False
+    ) -> None:
+        """Pasul aprobat nu s-a putut executa: nimic către oaspete, propunere nouă către host."""
+        self.repo.update(
+            incident.id,
+            status="awaiting_decision",
+            approval_id=None,
+            guest_answer=None,
+            guest_deadline=None,
+            decided_option=None,
+            resolution=None,
+            guest_note=(
+                "The PMS move could not be verified. The host is checking the booking before confirming any change."
+                if uncertain else
+                "The move that was offered could not be arranged. The host is reviewing the "
+                "options and will get back to the guest; nothing has changed for the stay yet."
+            ),
+        )
+        self._ctx.notify(
+            title, body, level=level, property_id=incident.property_id, booking_id=incident.booking_id
+        )
+        await self._emit(EstimateReady, incident)
+
     async def _relocate(self, incident: Incident, booking: Booking, drafts: GuestDrafts) -> None:
         ctx = self._ctx
+        original = ctx.world.get_property(incident.property_id)
         target = ctx.world.get_property(incident.relocation_property_id or "")
-        start, end = max(booking.check_in, ctx.clock.today()), booking.check_out
-        if target is None or not await self._is_free(target.id, start, end):
-            # Proprietatea s-a ocupat între timp: nimic către oaspete, propunere nouă.
-            name = target.name if target else "The relocation target"
-            self.repo.update(
-                incident.id,
-                status="awaiting_decision",
-                approval_id=None,
-                guest_answer=None,
-                decided_option=None,
-                resolution=None,
-            )
-            ctx.notify(
-                f"{name} is no longer free",
-                f"{booking.guest_name} accepted the move, but {name} was booked in the meantime. "
+        start, end = booking.check_in, booking.check_out
+        name = target.name if target else "The relocation target"
+        if target is None or original is None:
+            await self._propose_again(
+                incident,
+                f"{name} is no longer available",
+                f"{booking.guest_name} accepted the move, but the property no longer exists. "
                 "Nothing was confirmed to the guest; a new proposal follows.",
-                level="warning",
-                property_id=incident.property_id,
-                booking_id=booking.id,
             )
-            await self._emit(EstimateReady, incident)
             return
 
-        notes: list[str] = []
-        try:
-            await ctx.calendar.set_availability(target.id, start, end, False)
-            notes.append(f"{target.name} is blocked from {start} to {end}.")
-        except Exception as exc:  # fallback explicit: hostul blochează manual
-            notes.append(f"Could not block {target.name} in the calendar ({exc}); block it manually.")
-        await self._message_guest(booking.id, drafts.relocation_accepted)
-        notes.append("The reservation itself must still be moved in the PMS.")
+        # Verificarea și blocarea stau sub lockul comun al calendarului țintei: două relocări
+        # (sau o relocare și o relistare) nu pot decide pe aceeași citire.
+        async with ctx.calendar.lock(target.id):
+            connection = ctx.pms.get(booking.pms_provider)
+            if booking.pms_provider != target.pms_provider:
+                await self._propose_again(incident, "Relocation provider mismatch",
+                    "The destination is not on this booking's PMS. No reservation was moved.")
+                return
+            still_fits = is_compatible(target, original, booking.guest_count)
+            if not (
+                still_fits
+                and self._can_host_relocation(target)
+                and await self._is_free(target.id, start, end)
+            ):
+                why = (
+                    "was booked or blocked in the meantime"
+                    if still_fits
+                    else "no longer fits this stay (city, capacity or bedrooms changed)"
+                )
+                await self._propose_again(
+                    incident,
+                    f"{name} is no longer free",
+                    f"{booking.guest_name} accepted the move, but {name} {why}. "
+                    "Nothing was confirmed to the guest; a new proposal follows.",
+                )
+                return
+            try:
+                if connection.capabilities.write_availability:
+                    await ctx.calendar.set_availability(target.id, start, end, False)
+                await connection.move_reservation(booking.id, target.id)
+                await ctx.sync.sync(booking.pms_provider)
+                moved = ctx.world.get_booking(booking.id)
+                if moved is None or moved.property_id != target.id:
+                    raise RuntimeError("The synchronized PMS booking is not on the destination property")
+            except Exception as exc:
+                # Fără blocare nu putem garanta ținta: nu confirmăm nimic oaspetelui.
+                await self._propose_again(
+                    incident,
+                    f"{name} could not be blocked or the reservation move could not be verified",
+                    f"{booking.guest_name} accepted the move, but reserving {name} from {start} to "
+                    f"{end} failed ({exc}). Nothing was confirmed to the guest; a new proposal "
+                    "follows.",
+                    level="error",
+                    uncertain=True,
+                )
+                return
+
+        notes = [f"The PMS reservation was moved to {target.name} and synchronized to StayPilot."]
+        if not await self._message_guest(booking.id, drafts.relocation_accepted):
+            notes.append("The confirmation could not be delivered to the guest; contact them directly.")
         incident = self.repo.update(
             incident.id,
             status="relocated",
@@ -1032,6 +1237,23 @@ class IncidentService:
             property_id=incident.property_id,
             booking_id=booking.id,
         )
+
+    async def review_unapplied_relocation(self, incident_id: str) -> None:
+        """Reface oferta veche fără să execute o mutare nouă neaprobată."""
+        async with self._incident_locks[incident_id]:
+            incident = self.repo.get(incident_id)
+            if incident is None:
+                raise LookupError("Incident not found")
+            booking = self._live_booking(incident)
+            if incident.status != "relocated" or booking is None:
+                raise ValueError("Only a recorded relocation on an active booking can be reviewed")
+            if booking.property_id == incident.relocation_property_id:
+                raise ValueError("This relocation is already reflected in the booking")
+            if incident.closure_approval_id:
+                self._ctx.approvals.withdraw(incident.closure_approval_id, reason="The PMS relocation was not applied")
+                incident = self.repo.update(incident.id, closure_approval_id=None, closure_message=None)
+            await self._propose_again(incident, "Previous relocation was not applied in the PMS",
+                "The booking still belongs to the original property. A new same-provider offer requires host approval and guest acceptance.")
 
     # --- Sarcini și închidere -------------------------------------------------------------
 
@@ -1048,6 +1270,7 @@ class IncidentService:
             description=incident.description,
             message=task.description,
             round_index=0,
+            situation=scripted_task_note(incident.description),
         )
         await self.complete_task(
             task.id,
@@ -1111,6 +1334,11 @@ class IncidentService:
             kind=CLOSURE_KIND,
             title=f"Close the incident at {self._property_name(incident.property_id)}?",
             summary=summary
+            + (
+                f'\n\nOn approval the guest will receive: "{guest_message}"'
+                if guest_message
+                else "\n\nNo message will be sent to the guest."
+            )
             + "\n\nApprove to close the incident. Reject (with a note) to send the staff back.",
             options=[option],
             payload={"incident_id": incident.id, "round": round_no},

@@ -46,10 +46,10 @@ def test_request_without_a_property_analyses_all_of_them(client):
     analyse(client)
 
     insights = client.get("/f4/insights").json()
-    assert len(insights) == 4 and len({i["property_id"] for i in insights}) == 4
-    loft = property_by_name(client, "Brasov Mountain View Loft")
-    (loft_insight,) = client.get("/f4/insights", params={"property_id": loft["id"]}).json()
-    assert "Heating and hot water" in loft_insight["recommendations"]
+    assert len(insights) == 6 and len({i["property_id"] for i in insights}) == 6
+    studio = property_by_name(client, "Floreasca Garden Studio")
+    (studio_insight,) = client.get("/f4/insights", params={"property_id": studio["id"]}).json()
+    assert "Heating and hot water" in studio_insight["recommendations"]
 
 
 class FakeReviews:

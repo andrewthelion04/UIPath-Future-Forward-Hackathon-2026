@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from ui import api_client as api
-from ui.components import act, booking_label, flash, load, property_names, show_flash
+from ui.components import act, booking_label, flash, flash_outcome, load, property_names, show_flash
 
 SAMPLE_MESSAGES = {
     "Ask about check-in": "Hi! What time is check-in, and is there wifi?",
@@ -88,8 +88,14 @@ with staff_tab:
                 "staff_id": reporter["id"] if reporter else None,
                 "severity": severity or "medium",
             }
-            if act(api.post, "/sim/staff-report", body, wait=True) is not None:
-                flash(f"Report sent for {prop['name']}. The host now has a decision under Approvals.")
+            result = act(api.post, "/sim/staff-report", body, wait=True)
+            if result is not None:
+                flash_outcome(
+                    result,
+                    f"Report sent for {prop['name']}. The host now has a decision under Approvals.",
+                    f"Report sent for {prop['name']}. The agent is still working on it; the "
+                    "decision will appear under Approvals.",
+                )
                 st.rerun()
 
 # --- F5: anulare de rezervare -------------------------------------------------------
@@ -105,8 +111,14 @@ with cancel_tab:
             "Booking to cancel", active, format_func=lambda b: booking_label(b, names), key="cancel_booking"
         )
         if st.button("Cancel this booking", type="primary"):
-            if act(api.post, "/sim/cancel-booking", {"booking_id": target["id"]}, wait=True) is not None:
-                flash(f"{target['guest_name']}'s booking was cancelled. Check Approvals and Notifications.")
+            result = act(api.post, "/sim/cancel-booking", {"booking_id": target["id"]}, wait=True)
+            if result is not None:
+                flash_outcome(
+                    result,
+                    f"{target['guest_name']}'s booking was cancelled. Check Approvals and Notifications.",
+                    f"{target['guest_name']}'s booking was cancelled. The relisting proposal is "
+                    "still being prepared; check Approvals in a moment.",
+                )
                 st.rerun()
 
 # --- F4: analiza recenziilor --------------------------------------------------------
@@ -114,8 +126,14 @@ with reviews_tab:
     everything = {"id": None, "name": "All properties"}
     choice = st.selectbox("Property", [everything, *properties], format_func=lambda p: p["name"])
     if st.button("Analyse reviews", type="primary"):
-        if act(api.post, "/sim/review-analysis", {"property_id": choice["id"]}, wait=True) is not None:
-            flash(f"Review analysis finished for {choice['name']}. See Notifications.")
+        result = act(api.post, "/sim/review-analysis", {"property_id": choice["id"]}, wait=True)
+        if result is not None:
+            flash_outcome(
+                result,
+                f"Review analysis finished for {choice['name']}. See Notifications.",
+                f"Review analysis for {choice['name']} is still running; the result arrives in "
+                "Notifications.",
+            )
             st.rerun()
 
 # --- Reset --------------------------------------------------------------------------

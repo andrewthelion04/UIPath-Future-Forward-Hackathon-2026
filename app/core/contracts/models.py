@@ -68,6 +68,7 @@ class Property(BaseModel):
     base_price: float = 0.0
     currency: str = "EUR"
     pms_provider: PmsProvider = PmsProvider.MOCK
+    listing_url: str | None = None  # anunțul public al proprietății (poze, descriere), dacă există
 
 
 class Booking(BaseModel):
@@ -188,7 +189,8 @@ class Approval(BaseModel):
     summary: str = ""
     options: list[ApprovalOption]
     payload: dict[str, Any] = Field(default_factory=dict)
-    status: Literal["pending", "approved", "rejected"] = "pending"
+    # `withdrawn`: retrasă de feature înainte de decizie (a rămas în urma realității).
+    status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
     chosen_option: str | None = None
     decided_by: str | None = None
     decision_note: str | None = None
@@ -198,6 +200,37 @@ class Approval(BaseModel):
     dedupe_key: str | None = None
     created_at: datetime
     decided_at: datetime | None = None
+
+
+# --- Subiecte deschise cu oaspetele ---------------------------------------------------
+
+
+class GuestOffer(BaseModel):
+    """O ofertă făcută oaspetelui, la care poate răspunde „accept” sau „decline”."""
+
+    question: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["pending", "accepted", "declined", "withdrawn"] = "pending"
+    expires_at: datetime | None = None
+
+
+class GuestTopic(BaseModel):
+    """Ce se întâmplă acum cu sejurul oaspetelui, spus de feature-ul care se ocupă.
+
+    `facts` conține doar ce are voie să afle oaspetele (ex. o estimare aprobată de host).
+    """
+
+    id: str
+    booking_id: str
+    feature: str
+    kind: str
+    title: str
+    facts: dict[str, Any] = Field(default_factory=dict)
+    offer: GuestOffer | None = None
+    status: Literal["open", "closed"] = "open"
+    valid_until: date | None = None  # după această zi subiectul nu mai e arătat
+    created_at: datetime
+    updated_at: datetime
 
 
 class ApprovalDecisionIn(BaseModel):

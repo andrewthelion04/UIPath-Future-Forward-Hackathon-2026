@@ -59,6 +59,18 @@ async def test_message_is_sent_logged_and_announced(container):
     assert [m.body for m in container.conversations.history(booking.id)] == ["Welcome!"]
     event = next(e for e in container.bus.list_events() if e["type"] == "GuestMessageSent")
     assert event["payload"]["booking_id"] == booking.id and event["source"] == "feature:test"
+    (notification,) = container.notifications.list()
+    assert notification.level == "info"
+    assert notification.title == "New automated answer by Agent in chat with Emma Johnson"
+    assert notification.booking_id == booking.id
+    assert notification.property_id == booking.property_id
+    assert "Welcome!" not in notification.body
+
+
+async def test_host_written_reply_does_not_create_an_automated_answer_notification(container):
+    booking = mock_booking(container)
+    await container.channel.send_to_guest(booking.id, "The Wi-Fi password is demo.", sender="host")
+    assert container.notifications.list() == []
 
 
 async def test_message_is_routed_through_the_bookings_own_connection(container):
@@ -82,6 +94,7 @@ async def test_send_failure_is_recorded_and_the_host_is_notified(container):
     assert [m.status for m in container.conversations.history(booking.id)] == ["failed"]
     notification = container.notifications.list()[0]
     assert notification.level == "error" and "lost message" in notification.body
+    assert not any(n.level == "info" for n in container.notifications.list())
     assert not [e for e in container.bus.list_events() if e["type"] == "GuestMessageSent"]
 
 

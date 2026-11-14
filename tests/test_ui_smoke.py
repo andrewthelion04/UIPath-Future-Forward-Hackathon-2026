@@ -68,6 +68,40 @@ def test_main_app_discovers_the_feature_pages(api):
     assert len(FEATURE_PAGES) == 5
 
 
+def test_host_answers_a_guest_from_the_inbox(api):
+    booking = booking_by_guest(api, "Emma Johnson")
+    api.post("/sim/guest-message?wait=true", json={"booking_id":booking["id"], "text":"What is the Wi-Fi password?"})
+    answer = api.get("/answers").json()[0]
+    page = run_page(ROOT_DIR / "ui" / "views" / "approvals.py")
+    assert page.title[0].value == "Approvals / Answers"
+    page.text_area(key=f"reply_{answer['id']}").input("Wi-Fi password: Demo1234")
+    next(b for b in page.button if b.label == "Send reply to guest").click().run()
+    assert not page.exception
+    assert api.get("/answers").json() == []
+    assert api.get(f"/bookings/{booking['id']}/messages").json()[-1]["body"] == "Wi-Fi password: Demo1234"
+
+
+def test_world_calendar_navigates_across_year_boundary(api):
+    page = run_page(ROOT_DIR / "ui" / "views" / "world.py")
+    from datetime import date
+    page.session_state["calendar_month"] = date(2026,12,1)
+    page.button(key="calendar_next").click().run()
+    assert not page.exception
+    assert page.session_state["calendar_month"] == date(2027,1,1)
+    page.button(key="calendar_prev").click().run()
+    assert page.session_state["calendar_month"] == date(2026,12,1)
+
+
+def test_property_table_saves_local_edits(api):
+    page = run_page(ROOT_DIR / "ui" / "views" / "world.py")
+    prop = api.get("/properties").json()[0]
+    page.session_state["property_editor"] = {"edited_rows": {0:{"Name":"Edited in the table"}}, "added_rows":[], "deleted_rows":[]}
+    next(b for b in page.button if b.label == "Save property changes").click().run()
+    assert not page.exception
+    updated = next(p for p in api.get("/properties").json() if p["id"] == prop["id"])
+    assert updated["name"] == "Edited in the table"
+
+
 def test_simulator_drives_a_flow_and_the_inbox_decides_it(api):
     simulator = run_page(ROOT_DIR / "ui" / "views" / "simulator.py")
     guests = simulator.selectbox(key="chat_booking")
@@ -110,3 +144,40 @@ def test_staff_report_form_and_two_option_approval(api):
     inbox.button(key=f"approve_{approval['id']}").click().run()
     assert not inbox.exception
     assert api.get("/incidents").json()[0]["status"] == "relocated"
+
+
+def test_single_option_approval_shows_what_the_host_approves(api):
+    """Textul exact pentru oaspete stă în descrierea opțiunii; inboxul îl arată și când e una singură."""
+    apartment = property_by_name(api, "Calea Victoriei Apartment")
+    body = {"property_id": apartment["id"], "description": "Water is leaking under the kitchen sink."}
+    api.post("/sim/staff-report", params={"wait": True}, json=body)
+    (proposal,) = api.get("/approvals").json()
+    approve(api, proposal["id"], "remediate")
+    (closure,) = api.get("/approvals").json()
+    (option,) = closure["options"]
+    assert option["description"].startswith("Guest will receive:")
+
+    inbox = run_page(ROOT_DIR / "ui" / "views" / "approvals.py")
+
+    assert option["description"] in [str(block.value) for block in inbox.markdown]
+
+
+def test_host_can_record_the_guests_answer_after_a_direct_conversation(api, monkeypatch):
+    """Copilotul a predat discuția; hostul notează în pagina F2 ce a hotărât oaspetele."""
+    container = api.app.state.container
+    service = next(
+        s.handler.__self__ for s in container.bus.subscriptions() if s.name == "f2_incidents.on_issue_reported"
+    )
+    monkeypatch.setattr(service.settings, "sim_guest_answer", "off")
+    apartment = property_by_name(api, "Calea Victoriei Apartment")
+    body = {"property_id": apartment["id"], "description": "The air conditioning is not working"}
+    api.post("/sim/staff-report", params={"wait": True}, json=body)
+    (incident,) = api.get("/incidents").json()
+    approve(api, incident["approval_id"], "relocate")
+    assert api.get("/incidents").json()[0]["status"] == "awaiting_guest"
+
+    page = run_page(ROOT_DIR / "app" / "features" / "f2_incidents" / "ui_page.py")
+    page.button(key=f"stay_{incident['id']}").click().run()
+
+    assert not page.exception
+    assert api.get("/incidents").json()[0]["status"] == "remediation_scheduled"

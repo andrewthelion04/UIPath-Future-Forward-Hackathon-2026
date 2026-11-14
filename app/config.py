@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     ownerrez_personal_token: SecretStr | None = None
     ownerrez_user_agent: str = "StayPilot AI"
 
+    # --- Autentificarea API-ului ---------------------------------------------------
+    # Dacă e setat, orice request cere `Authorization: Bearer <token>`, în afară de
+    # `/health` și `/webhooks/*` (webhook-urile au verificările lor, vezi mai jos).
+    api_token: SecretStr | None = None
+
     # --- Webhook-uri ---------------------------------------------------------------
     webhook_token: SecretStr | None = None  # dacă e setat, /webhooks/* cere ?token=...
 

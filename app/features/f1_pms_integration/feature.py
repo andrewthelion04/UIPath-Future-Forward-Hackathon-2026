@@ -16,6 +16,8 @@ def register(ctx: FeatureContext) -> None:
     settings = ctx.load_settings(F1Settings)
     pipeline = InboundPipeline(ctx)
     ctx.include_router(build_router(ctx, pipeline, settings))
+    # Și consumatorii direcți ai `Container` (fără lifespan-ul routerului) așteaptă reprocesările.
+    ctx.on_quiesce(pipeline.close)
 
     def install_hooks() -> None:
         original_sync = ctx.sync.sync

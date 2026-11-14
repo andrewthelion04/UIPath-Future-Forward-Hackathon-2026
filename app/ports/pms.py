@@ -36,6 +36,7 @@ class PmsCapabilities(BaseModel):
     read_calendar: bool = False
     write_prices: bool = False
     write_availability: bool = False
+    move_reservations: bool = False
 
 
 class PmsProperty(BaseModel):
@@ -48,6 +49,7 @@ class PmsProperty(BaseModel):
     amenities: list[str] = Field(default_factory=list)
     base_price: float = 0.0
     currency: str = "EUR"
+    listing_url: str | None = None
 
 
 class PmsReservation(BaseModel):
@@ -85,6 +87,10 @@ class PropertiesPort(Protocol):
 @runtime_checkable
 class ReservationsPort(Protocol):
     async def list_reservations(self) -> list[PmsReservation]: ...
+
+    async def move_reservation(self, booking_id: str, property_id: str) -> None:
+        """Mută rezervarea în același PMS, fără schimbarea datelor sau tarifelor."""
+        ...
 
 
 @runtime_checkable

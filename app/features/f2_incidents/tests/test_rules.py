@@ -33,6 +33,7 @@ def test_compatibility_rule():
     assert not is_compatible(same_city.model_copy(update={"city": "Brasov"}), original, 2)
     assert not is_compatible(same_city.model_copy(update={"max_guests": 1}), original, 2)
     assert not is_compatible(same_city.model_copy(update={"bedrooms": 0}), original, 2)
+    assert not is_compatible(same_city.model_copy(update={"pms_provider": "ownerrez"}), original, 2)
 
 
 def test_hours_until_check_in():
