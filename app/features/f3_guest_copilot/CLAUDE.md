@@ -8,21 +8,34 @@ Răspunde la mesajele oaspeților consultând datele noastre: rezervarea, propri
 - Emite: `GuestMessageSent` (prin `ChannelGateway`), `IssueReported` cu `reported_via="guest"` (preluat de F2), `ApprovalRequested` (prin serviciul de aprobări).
 - Date deținute: niciun tabel propriu. Folosește `messages` și `agent_runs` / `agent_steps` din nucleu. Promptul e în `prompts/system.md`.
 - Porturi folosite: `llm` (prin `ctx.agent`), `calendar`, `channel`.
-- Cereri de aprobare: `guest_request` — excepție de la regulile hostului sau promisiune către oaspete; la aprobare se trimite răspunsul propus.
+- Cereri de aprobare: `guest_request` cu tip și parametri validați (`early_check_in`, `late_check_out`, `extra_guests`, `pets`); la aprobare se revalidează condițiile și se trimite confirmarea canonică arătată hostului.
 
 ## Stare curentă
 - Agentul `f3_guest_copilot.reply` are uneltele: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `report_issue`, plus `finish` din buclă.
 - Întrebare informativă → citește contextul → răspunde.
-- Early check-in / late check-out → verifică noaptea relevantă în calendar → cere aprobarea hostului → îi spune oaspetelui că hostul va confirma. După decizie, oaspetele primește confirmarea sau un refuz politicos.
+- Early check-in / late check-out → verifică noaptea relevantă → cere sau reutilizează aprobarea exactă → răspunde în funcție de status. Confirmarea cere și verificarea actuală a unei nopți libere; un calendar ocupat sau necunoscut cere intervenția manuală a hostului.
+- `get_booking_context` expune aprobările F3 ale rezervării, filtrate înainte de orice limită globală. Repetarea semantică reutilizează aceeași aprobare inclusiv după aprobare/refuz; schimbarea parametrilor sau a condițiilor relevante creează un scop nou.
+- Mesajele și deciziile aceleiași rezervări rulează consecutiv, cu timeout de așteptare și eliberarea sigură a lockului la anulare. Rezervările diferite pot rula în paralel; contextul se recitește după așteptare.
+- Sunt tratate cererile pentru animale și oaspeți suplimentari, informațiile despre parcare/acces și intențiile mixte. Datele lipsă, cererile nesuportate și excepțiile suplimentare ajung la host pentru follow-up, fără răspunsuri inventate.
 - Problemă semnalată → `report_issue` → `IssueReported` → F2 deschide incidentul.
 - Dacă agentul nu termină sau nu trimite niciun răspuns, hostul primește notificarea „reply manually”.
 - Limite impuse în cod (`tools.py`): cel mult 2 răspunsuri și o singură cerere de aprobare per rulare, interval de calendar de cel mult 14 nopți.
+- `send_guest_reply` verifică aprobarea, rezervarea, cererea și textul exact al confirmării. Filtrul suplimentar pentru text liber blochează formulări cunoscute de promisiune, fără a pretinde o garanție semantică pentru orice limbă sau parafrază.
 - LLM-ul mock are o politică deterministă pe cuvinte-cheie în `mock_llm.py`.
+- `scripts/eval_models.py` rulează 8 scenarii izolate, cu PMS mock chiar pentru modele OpenRouter explicite; raportează efectele, pașii, costul cunoscut și timpul în tabel/JSON/CSV.
+- Verificat la 14 noiembrie 2026: `python manage.py test` — **390 passed**, inclusiv arhitectura și regresiile F1. Evaluator mock: **8/8** scenarii reușite. Smoke cu API și Streamlit reale pe mock: cerere repetată, aprobare livrată o singură dată, refuz animale, mesaj mixt incident + late check-out și afișarea conversațiilor/rulărilor în pagina F3.
 
 ## Decizii
-- După decizia hostului pleacă un mesaj fix (răspunsul propus sau refuzul), fără o nouă rulare de agent — e simplu, previzibil și nu costă un apel la model.
+- După decizia hostului pleacă o confirmare canonică sau un refuz fix, fără o nouă rulare de agent. Autoritatea este aprobarea persistentă, nu payload-ul evenimentului. Repetarea deciziei nu dublează livrarea în procesul curent.
 - Mesajul oaspetelui intră în obiectiv între delimitatori, marcat ca date — reduce riscul ca textul oaspetelui să fie luat drept instrucțiune.
-- `send_guest_reply` e doar informativ; promisiunile trec prin `request_host_approval` — regula e în prompt, iar limitele numerice sunt în cod.
+- Modelele locale `GuestRequest` și funcțiile din `requests.py` impun identitatea semantică, capacitatea, limitele orare și scopul aprobării, fără modificarea contractelor comune. Textele propuse de LLM nu pot înlocui confirmarea generată de server.
+- Cheia `dedupe_key` include rezervarea, cererea canonică și un snapshot al condițiilor relevante (inclusiv numele oaspetelui). O cerere identică pendinte/aprobată/refuzată reutilizează rezultatul; un scop schimbat cere altă aprobare. Condițiile se recitesc și după apelul de calendar, pentru a detecta sincronizările concurente.
+- `None` la limita early/late dezactivează excepția. Depășirea `max_guests` sau a limitelor orare nu poate fi aprobată. `pets_allowed=False` și oaspeții suplimentari în limita capacității sunt negociabili numai prin host; fumatul, petrecerile și alte tipuri nesuportate necesită follow-up manual, fără confirmare automată.
+- Aprobarea pentru oaspeți suplimentari acordă permisiunea, fără să modifice numărul din rezervarea PMS. Cererile de animale/oaspeți se referă la șederea rezervată; cererile cu alte date necesită clarificare sau intervenție manuală.
+- Lockul per rezervare este comun mesajelor și deciziilor; așteptarea implicită este jumătate din `handler_timeout_s`. Timeoutul comun continuă să includă și așteptarea. Istoricul exclude mesajele inbound sosite după mesajul procesat, dar include răspunsurile deja trimise.
+- Un calendar gol, incomplet, cu zile duplicate sau cu proprietate greșită este necunoscut, nu liber. Cererea poate informa hostul despre această lipsă; confirmarea automată este blocată până la verificarea disponibilității.
+- Informațiile lipsă sunt comunicate explicit prin `host_follow_up=True`, cu notificare. Filtrul textului liber este conservator și suplimentar: nu înlocuiește autorizarea structurată și nici evaluarea unui LLM real.
+- Evaluarea folosește baze temporare și dată fixă; succesul cere efecte reale în mesaje/aprobări/evenimente. Costul cunoscut al pașilor persistați se păstrează la întreruperi, iar consumul incomplet este marcat `usage_complete=false`.
 - Uneltele întorc doar câmpurile utile, nu obiecte întregi — contextul rămâne mic.
 
 ## Plan faza 1
@@ -31,11 +44,11 @@ Răspunde la mesajele oaspeților consultând datele noastre: rezervarea, propri
 
 **De implementat, în ordine:**
 
-1. [ ] **Aprobările în așteptare, vizibile agentului.** `get_booking_context` întoarce și cererile `guest_request` nedecise ale rezervării; promptul cere să nu se ceară din nou același lucru.
-2. [ ] **Coadă per conversație.** Două mesaje rapide pe aceeași rezervare se procesează pe rând, nu în paralel (un lock per `booking_id` în feature).
-3. [ ] **Mai multe tipuri de cereri:** oaspeți în plus, animale, parcare, indicații de acces. Excepțiile merg la host; informațiile vin din date.
-4. [ ] **Gardă în cod pentru promisiuni.** `send_guest_reply` refuză un text care confirmă o excepție când nu există o aprobare acordată pentru rezervare; eroarea se întoarce modelului.
-5. [ ] **Scriptul de evaluare** (`scripts/eval_models.py`): 5–8 scenarii fixe, rulate pe modelele date ca argument; raportează succes, pași, cost și timp. Rulează și pe LLM-ul mock, ca să poată fi testat fără cheie.
+1. [x] **Aprobările în așteptare, vizibile agentului.** `get_booking_context` întoarce și cererile `guest_request` nedecise ale rezervării; promptul cere să nu se ceară din nou același lucru.
+2. [x] **Coadă per conversație.** Două mesaje rapide pe aceeași rezervare se procesează pe rând, nu în paralel (un lock per `booking_id` în feature).
+3. [x] **Mai multe tipuri de cereri:** oaspeți în plus, animale, parcare, indicații de acces. Excepțiile merg la host; informațiile vin din date.
+4. [x] **Gardă în cod pentru promisiuni.** Confirmările cer aprobarea exactă și textul canonic; filtrul suplimentar al textului liber respinge promisiuni cunoscute, cu limita semantică documentată.
+5. [x] **Scriptul de evaluare** (`scripts/eval_models.py`): 8 scenarii fixe, pe modelele date ca argument; raportează succes, pași, cost și timp. Rulează cap-coadă pe mock, fără cheie.
 
 **Criterii de acceptare:**
 - a doua cerere identică nu creează a doua aprobare;
@@ -64,16 +77,53 @@ Aceste reguli sunt pentru Claude Code. Scopul: implementarea să iasă bine din 
 
 ## Cerințe suplimentare ale echipei
 
-<de completat de membrul care preia feature-ul, înainte de one-shot: ce vrem exact în plus sau altfel față de planul de mai sus>
+1. **Identificarea cererilor și deduplicare în cod.**
+   - Cererile `guest_request` au un tip și parametri structurați, definiți în F3: rezervare, dată, oră, număr de persoane sau alte detalii relevante tipului cererii.
+   - Identitatea unei cereri se construiește din `booking_id`, tip și parametri canonici, nu din textul liber al rezumatului. Aceeași cerere aflată în așteptare reutilizează aprobarea existentă, inclusiv după reformulare; parametrii diferiți reprezintă altă cerere.
+   - Folosește `dedupe_key` al serviciului comun de aprobări. Definește și testează explicit comportamentul cererilor repetate după aprobare sau refuz, deoarece serviciul comun deduplică indiferent de status.
+   - `get_booking_context` expune numai aprobările relevante rezervării, feature-ului F3 și tipului `guest_request`.
+
+2. **Aprobarea autorizează numai cererea exactă.**
+   - O aprobare pentru early check-in nu autorizează late check-out, animale sau alte excepții. Verificarea leagă aprobarea de rezervarea, tipul și parametrii confirmați de host.
+   - Verificarea se aplică atât în `send_guest_reply`, cât și înaintea mesajului trimis de `on_guest_request_decision`; existența oricărei aprobări acordate pe aceeași rezervare nu este suficientă.
+   - Înaintea confirmării, recitește rezervarea și condițiile relevante. Dacă rezervarea este anulată sau condițiile aprobate nu mai sunt valabile, nu trimite confirmarea și notifică hostul.
+
+3. **Gardă pentru promisiuni, cu limite explicite.**
+   - Pentru confirmările tipurilor de cereri suportate, folosește parametri validați și mesaje construite controlat sau textul exact aprobat de host.
+   - Nu considera suficiente etichetarea răspunsului de către model drept „informativ” sau existența unui `approval_id` neverificat.
+   - Regex-urile peste text liber pot fi o protecție suplimentară, dar nu reprezintă o garanție de detectare a tuturor promisiunilor, formulărilor și limbilor. Documentează limita și testează direct uneltele cu încercări de confirmare neautorizată; eroarea trebuie întoarsă modelului.
+
+4. **Limite ferme și excepții negociabile.**
+   - Impune în cod capacitatea `max_guests` și limitele orare, înaintea cererii de aprobare și înaintea confirmării. Aprobarea hostului nu ocolește automat aceste limite.
+   - Definește explicit comportamentul când `early_check_in_earliest` sau `late_check_out_latest` este `None`; lipsa unei limite nu se interpolează într-o promisiune și nu se înlocuiește cu o oră inventată.
+   - Precizează politica pentru `pets_allowed=False` și celelalte reguli: interdicție fermă sau excepție care poate fi cerută hostului. Distincția se aplică în unelte, nu doar în prompt.
+
+5. **Procesare consecutivă pentru mesaje și deciziile hostului.**
+   - Mesajele și răspunsurile după decizia hostului folosesc aceeași protecție per `booking_id`; rezervările diferite se pot procesa în paralel.
+   - Citește contextul relevant în interiorul secțiunii protejate și păstrează identificarea mesajului procesat, fără amestec între conversații.
+   - Tratează explicit timeoutul și anularea, eliberează întotdeauna lockul și notifică hostul dacă procesarea nu poate continua. Ține cont că timeoutul handlerului comun include și așteptarea lockului.
+
+6. **Răspunsuri exclusiv din informațiile disponibile.**
+   - Informațiile despre acces, parcare, costuri, Wi-Fi și regulile proprietății provin numai din datele returnate de unelte. Nu deduce existența parcării publice, includerea gratuită a unui loc sau existența unui ghid cu parola Wi-Fi din simpla prezență ori absență a unei facilități.
+   - Pentru informații lipsă, recunoaște lipsa lor și solicită intervenția hostului. Un calendar indisponibil, incomplet sau cu eroare înseamnă disponibilitate necunoscută, nu nopți libere.
+   - Ține cont de starea integrărilor după F1: calendarul OwnerRez poate fi citit; calendarul Hospitable rămâne stub. F3 folosește în continuare portul comun, fără importuri de adaptoare concrete.
+   - Actualizează `mock_llm.py` odată cu uneltele și promptul, inclusiv pentru date lipsă și mesaje cu intenții multiple, astfel încât o problemă raportată să nu ascundă o cerere distinctă a oaspetelui.
+
+7. **Evaluare izolată și teste după efectele reale.**
+   - `scripts/eval_models.py` rulează 5–8 scenarii fixe cu baze temporare, date resetate și dată de referință fixă. PMS-ul rămâne mock inclusiv la evaluarea unui LLM real; scriptul nu trimite mesaje prin conexiuni PMS reale și nu modifică baza locală a aplicației.
+   - Verifică succesul prin mesajele trimise, aprobările create sau reutilizate și evenimentele publicate, nu doar prin apelarea `finish`. Raportează pentru fiecare scenariu și model succesul, pașii, costul și timpul.
+   - Testele F3 acoperă cereri identice reformulate, parametri modificați, aprobări pentru altă rezervare sau alt tip de cerere, limite depășite, mesaje simultane pe aceeași rezervare și pe rezervări diferite, intenții multiple și erori de unelte, LLM sau canal.
+   - Evaluarea pe mock rulează fără chei și fără rețea. Evaluarea promptului pe modele reale este separată și nu este înlocuită de rezultatele politicii mock.
 
 ## Probleme deschise / TODO
-- Codul nu poate verifica dacă textul din `send_guest_reply` conține o promisiune; regula stă doar în prompt. De evaluat cu un model real.
+- Filtrul textului liber nu poate demonstra absența oricărei promisiuni, pentru orice formulare sau limbă. Confirmările suportate au autorizare structurată strictă; precizia textului liber și răspunsurile în limba oaspetelui necesită evaluare pe modele reale.
 - Politica mock recunoaște intenții după cuvinte-cheie în engleză; nu spune nimic despre calitatea promptului.
-- Două mesaje rapide pe aceeași rezervare pornesc două rulări în paralel.
-- Agentul nu vede aprobările în așteptare ale aceleiași rezervări, deci poate cere din nou același lucru la un mesaj ulterior.
 - Refuzul e un text fix; nota hostului nu ajunge la oaspete.
-- Pe o conexiune PMS reală `check_calendar` întoarce eroare (calendarul nu se poate citi încă); agentul trebuie să se descurce fără.
-- Scenariile fixe de evaluare pe 2–3 modele (`CLAUDE.md` §5) nu există încă.
+- Calendarul OwnerRez este citibil după F1; Hospitable rămâne stub. Fără disponibilitate verificabilă nu se trimite automat confirmarea unei excepții orare.
+- Confirmările canonice și refuzul fix sunt în engleză; localizarea lor controlată rămâne de extins.
+- Lockurile și deduplicarea livrării deciziilor sunt locale procesului unic. Nu există reluare durabilă după restart; o trimitere întreruptă după acceptarea de către PMS poate necesita verificare manuală.
+- Agentul comun poate lăsa o rulare anulată cu status `running` în trace. F3 eliberează lockul și notifică hostul; evaluatorul păstrează metricile deja persistate și marchează consumul incomplet. Nucleul nu a fost modificat.
+- Cele 8 scenarii există și trec pe mock; rularea lor pe 2–3 modele reale, alegerea modelului și ajustarea promptului necesită cheie OpenRouter și rămân de verificat manual.
 
 ## Note pentru Claude
 - Promptul descrie obiectivul și condiția de terminare; păstrează formatul „ai terminat când…”. Nu adăuga „ești un asistent”.

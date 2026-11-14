@@ -135,7 +135,7 @@ async def test_reply_and_approval_limits_are_enforced_in_code(container):
     assert len(container.conversations.history(emma.id)) == MAX_REPLIES_PER_RUN
 
     ask = tools["request_host_approval"]
-    args = ask.args_model(request_summary="Guest wants X", proposed_reply="Approved X", reason="test")
+    args = ask.args_model(request={"request_type": "early_check_in"}, reason="test")
     await ask.handler(args, run)
     with pytest.raises(RuntimeError, match="already requested"):
         await ask.handler(args, run)

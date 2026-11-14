@@ -369,6 +369,311 @@ def test_ownerrez_webhook_parsing(container):
     assert adapter.parse_webhook({**payload, "entity": {**payload["entity"], "is_draft": True}}) is None
 
 
+@pytest.mark.parametrize("entity_type", ["booking", "reservation"])
+@pytest.mark.parametrize("action", ["entity_create", "entity_update", "entity_delete"])
+async def test_ownerrez_recognizes_only_supported_reservation_webhooks(container, entity_type, action):
+    adapter = ownerrez(container, Recorder(ownerrez_api))
+    personal = ownerrez(container, Recorder(ownerrez_api), username="host", personal_token="pt_test")
+    try:
+        webhook = {"entity_type": entity_type, "action": action}
+        assert adapter.is_reservation_webhook(webhook)
+        assert adapter.parse_webhook(webhook) is None
+        assert not personal.is_reservation_webhook(webhook)
+        assert not adapter.is_reservation_webhook({**webhook, "action": "unexpected"})
+        assert not adapter.is_reservation_webhook({**webhook, "entity_type": "thread_message"})
+        assert not adapter.is_reservation_webhook({})
+    finally:
+        await adapter.aclose()
+        await personal.aclose()
+
+
+@pytest.mark.parametrize("key", ["action", "event", "type"])
+@pytest.mark.parametrize("event", ["reservation.created", "reservation.updated", "reservation.cancelled", "booking.cancelled"])
+async def test_hospitable_recognizes_reservation_webhook_names(container, key, event):
+    adapter = hospitable(container, Recorder(hospitable_api))
+    try:
+        assert adapter.is_reservation_webhook({key: event})
+        assert not adapter.is_reservation_webhook({key: "message.created"})
+        assert not adapter.is_reservation_webhook({key: None})
+        assert not adapter.is_reservation_webhook({key: {"type": event}})
+        assert not adapter.is_reservation_webhook({key: "reservation"})
+        assert not adapter.is_reservation_webhook({})
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_combines_bookings_blocks_and_sparse_paginated_spot_rates(container):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+    entries = [
+        {"property_id": 1, "type": "booking", "arrival": "2026-07-08", "departure": "2026-07-11", "status": "active"},
+        {"property_id": 1, "type": "block", "arrival": "2026-07-12", "departure": "2026-07-14"},
+        {"property_id": 1, "type": "booking", "arrival": "2026-07-11", "departure": "2026-07-12", "status": "canceled"},
+        {"property_id": 1, "type": "block", "arrival": "2026-07-11", "departure": "2026-07-12", "status": "cancelled"},
+        {"property_id": 2, "type": "booking", "arrival": "2026-07-10", "departure": "2026-07-15"},
+        {"property_id": 1, "type": "booking", "arrival": "2026-07-09", "departure": "2026-07-10"},
+        {"property_id": 1, "type": "booking", "arrival": "2026-07-15", "departure": "2026-07-16"},
+    ]
+
+    def respond(request):
+        if request.url.path == "/v2/properties":
+            return httpx.Response(200, json={"items": [{"id": 1, "base_price": 100, "currency_code": "USD"}]})
+        if request.url.path == "/v2/bookings":
+            if request.url.params.get("cursor") == "next":
+                return httpx.Response(200, json={"items": entries[1:]})
+            return httpx.Response(200, json={"items": entries[:1], "next_page_url": "https://apistage.ownerrez.com/v2/bookings?cursor=next"})
+        if request.url.path == "/v2/spotrates":
+            if request.url.params.get("cursor") == "next":
+                return httpx.Response(200, json={"items": [{"property_id": 1, "date": "2026-07-14", "amount": 0}]})
+            return httpx.Response(200, json={"items": [
+                {"property_id": 1, "date": "2026-07-10", "amount": "149.5"},
+                {"property_id": 1, "date": "2026-07-11", "amount": -50},
+                {"property_id": 1, "date": "2026-07-12", "amount": "NaN"},
+                {"property_id": 1, "date": "2026-07-13", "amount": "Infinity"},
+                {"property_id": 2, "date": "2026-07-11", "amount": 999},
+                {"property_id": 1, "date": "2026-07-15", "amount": 888},
+                {"property_id": 1, "date": "bad-date", "amount": 777},
+            ], "next_page_url": "https://apistage.ownerrez.com/v2/spotrates?cursor=next"})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    api = Recorder(respond)
+    adapter = ownerrez(container, api)
+    try:
+        days = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 15))
+        assert adapter.capabilities.read_calendar is True
+        assert [day.day for day in days] == [date(2026, 7, n) for n in range(10, 15)]
+        assert [day.available for day in days] == [False, True, False, False, True]
+        assert [day.price for day in days] == [149.5, 100, 100, 100, 0]
+        assert {(day.property_id, day.currency) for day in days} == {("prop_beach", "USD")}
+        for path in ("/v2/bookings", "/v2/spotrates"):
+            first_request = next(request for request in api.requests if request.url.path == path)
+            assert first_request.url.params["property_ids"] == "1"
+            assert first_request.url.params["from"] == "2026-07-10"
+            assert first_request.url.params["to"] == "2026-07-14"
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize("base_price,expected", [(87.5, 87.5), (None, 0), ("invalid", 0), (-1, 0), ("NaN", 0)])
+async def test_ownerrez_calendar_uses_safe_property_fallback_when_rates_unavailable(container, base_price, expected):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+
+    def respond(request):
+        if request.url.path == "/v2/bookings":
+            return httpx.Response(200, json={"limit": 100})
+        if request.url.path == "/v2/properties":
+            return httpx.Response(200, json={"items": [{"id": 1, "base_price": base_price, "currency_code": "USD"}]})
+        if request.url.path == "/v2/spotrates":
+            return httpx.Response(404, json={"error": "unsupported in this environment"})
+        raise AssertionError(request.url)
+
+    adapter = ownerrez(container, Recorder(respond))
+    try:
+        (day,) = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+        assert (day.available, day.price, day.currency) == (True, expected, "USD")
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_keeps_availability_when_all_optional_prices_fail(container):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+
+    def respond(request):
+        if request.url.path == "/v2/bookings":
+            return httpx.Response(200, json={"items": [{"property_id": 1, "type": "block", "arrival": "2026-07-10", "departure": "2026-07-11"}]})
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    adapter = ownerrez(container, Recorder(respond))
+    try:
+        (day,) = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+        assert (day.available, day.price) == (False, 0)
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_preserves_cached_currency_and_base_price_during_metadata_failure(container):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+    metadata_available = True
+
+    def respond(request):
+        if request.url.path == "/v2/properties":
+            if metadata_available:
+                return httpx.Response(200, json={"items": [{"id": 1, "base_price": 87.5, "currency_code": "USD"}]})
+            return httpx.Response(503, text="property metadata temporarily unavailable")
+        if request.url.path == "/v2/bookings":
+            return httpx.Response(200, json={})
+        if request.url.path == "/v2/spotrates":
+            return httpx.Response(200, json={"items": [{"property_id": 1, "date": "2026-07-10", "amount": 149}]})
+        raise AssertionError(request.url)
+
+    adapter = ownerrez(container, Recorder(respond))
+    try:
+        await adapter.list_properties()
+        metadata_available = False
+        days = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 12))
+        assert [(day.price, day.currency) for day in days] == [(149, "USD"), (87.5, "USD")]
+        assert all(day.available for day in days)
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_validates_mapping_range_and_availability_failures(container):
+    api = Recorder(lambda request: httpx.Response(503, text="unavailable"))
+    adapter = ownerrez(container, api)
+    try:
+        with pytest.raises(UnmappedEntity):
+            await adapter.get_days("unknown", date(2026, 7, 10), date(2026, 7, 11))
+        container.ids.link("ownerrez", "property", "1", "prop_beach")
+        assert await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 10)) == []
+        with pytest.raises(ValueError, match="end"):
+            await adapter.get_days("prop_beach", date(2026, 7, 11), date(2026, 7, 10))
+        assert api.requests == []
+        with pytest.raises(PmsError, match="HTTP 503"):
+            await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize("entry", [
+    {"arrival": "invalid", "departure": "2026-07-11"},
+    {"arrival": "2026-07-10"},
+    {"arrival": "2026-07-12", "departure": "2026-07-11"},
+])
+async def test_ownerrez_calendar_never_reports_free_when_occupancy_is_malformed(container, entry):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+    adapter = ownerrez(container, Recorder(lambda request: httpx.Response(200, json={"items": [entry]})))
+    try:
+        with pytest.raises(PmsError, match="invalid dates"):
+            await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize("entry_type", ["booking", "block", "owner", "quote_hold", "linked_availability"])
+async def test_ownerrez_calendar_holds_every_supported_occupying_type_through_end(container, entry_type):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+
+    def respond(request):
+        if request.url.path == "/v2/bookings":
+            return httpx.Response(200, json={"items": [{"property_id": 1, "type": entry_type,
+                "arrival": "2026-07-10", "departure": "2026-07-20", "status": "pending"}]})
+        return httpx.Response(200, json={})
+
+    adapter = ownerrez(container, Recorder(respond))
+    try:
+        days = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 13))
+        assert [day.available for day in days] == [False, False, False]
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_rejects_truncated_booking_pagination(container, monkeypatch):
+    monkeypatch.setattr("app.adapters.ownerrez.adapter.MAX_PAGES", 2)
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+    api = Recorder(lambda request: httpx.Response(200, json={"items": [],
+        "next_page_url": "https://apistage.ownerrez.com/v2/bookings?cursor=more"}))
+    adapter = ownerrez(container, api)
+    try:
+        with pytest.raises(PmsError, match="pagination exceeded"):
+            await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+        assert len(api.requests) == 2
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_wraps_transport_timeouts_as_pms_errors(container):
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+
+    def timeout(request):
+        raise httpx.ReadTimeout("calendar read timed out", request=request)
+
+    adapter = ownerrez(container, Recorder(timeout))
+    try:
+        with pytest.raises(PmsError, match="timed out"):
+            await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_ownerrez_availability_remains_explicitly_disabled_without_symmetric_api(container, available):
+    api = Recorder(ownerrez_api)
+    adapter = ownerrez(container, api)
+    try:
+        assert adapter.capabilities.write_availability is False
+        with pytest.raises(CapabilityNotSupported, match="blocks cannot be cancelled or deleted"):
+            await adapter.set_availability("prop_beach", date(2026, 7, 10), date(2026, 7, 11), available)
+        assert api.requests == []
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize("provider", ["ownerrez", "hospitable"])
+def test_real_reservation_cancellation_webhook_syncs_and_publishes_once(settings, provider):
+    cancelled = False
+
+    def respond(request):
+        response = ownerrez_api(request) if provider == "ownerrez" else hospitable_api(request)
+        if request.url.path in ("/v2/bookings", "/v2/reservations"):
+            body = response.json()
+            if cancelled:
+                if provider == "ownerrez":
+                    body["items"][0]["status"] = "canceled"
+                else:
+                    body["data"][0]["reservation_status"]["current"]["category"] = "cancelled"
+            return httpx.Response(response.status_code, json=body)
+        return response
+
+    with app_client(settings) as client:
+        container = client.app.state.container
+        api = Recorder(respond)
+        adapter = ownerrez(container, api) if provider == "ownerrez" else hospitable(container, api)
+        container.pms.register(adapter)
+        assert client.post(f"/integrations/{provider}/sync").status_code == 200
+        cancelled = True
+        webhook = (
+            {"entity_type": "booking", "action": "entity_update", "entity_id": 501}
+            if provider == "ownerrez" else {"event": "reservation.cancelled", "data": {"id": "res-uuid-1"}}
+        )
+        for _ in range(3):
+            response = client.post(f"/webhooks/{provider}", json=webhook)
+            assert response.status_code == 200 and response.json()["status"] == "synced"
+        assert drain(client)
+        (event,) = events_of(client, "BookingCancelled")
+        assert event["source"] == f"sync:{provider}"
+        assert event["payload"]["pms_provider"] == provider
+        assert "uuid" not in str(event["payload"])
+        internal_booking = container.world.get_booking(event["payload"]["booking_id"])
+        assert internal_booking.status == "cancelled"
+
+
+@pytest.mark.parametrize("provider", ["ownerrez", "hospitable"])
+def test_real_unmapped_message_is_automatically_replayed_after_sync(settings, provider):
+    with app_client(settings) as client:
+        container = client.app.state.container
+        api = Recorder(ownerrez_api if provider == "ownerrez" else hospitable_api)
+        adapter = ownerrez(container, api) if provider == "ownerrez" else hospitable(container, api)
+        container.pms.register(adapter)
+        webhook = (
+            {"entity_type": "thread_message", "action": "entity_create", "entity_id": "real-unmapped-1",
+             "entity": {"body": "What time is check-in?", "from_role": "Guest", "thread": {"booking_id": 501}}}
+            if provider == "ownerrez" else
+            {"action": "message.created", "data": {"id": "real-unmapped-1", "reservation_id": "res-uuid-1",
+                                                    "sender_type": "guest", "body": "What time is check-in?"}}
+        )
+        assert client.post(f"/webhooks/{provider}", json=webhook).json()["status"] == "unmapped"
+        assert client.post(f"/integrations/{provider}/sync").status_code == 200
+        assert drain(client)
+        (event,) = events_of(client, "GuestMessageReceived")
+        assert event["source"] == f"webhook:{provider}"
+        assert "uuid" not in str(event["payload"])
+        original = client.get("/f1/webhook-log").json()[0]
+        assert original["outcome"] == "published" and original["event_id"] == event["id"]
+        assert original["detail"] == "reprocessed after sync"
+        assert client.post(f"/integrations/{provider}/sync").status_code == 200
+        assert client.post(f"/webhooks/{provider}", json=webhook).json()["status"] == "duplicate"
+        assert drain(client) and len(events_of(client, "GuestMessageReceived")) == 1
+
+
 # =====================================================================================
 # OpenRouter
 # =====================================================================================
