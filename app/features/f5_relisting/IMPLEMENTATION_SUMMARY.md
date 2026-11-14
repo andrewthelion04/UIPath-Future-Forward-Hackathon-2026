@@ -154,4 +154,9 @@ Verificări pe codul integrat:
   Paginile de audit s-au afișat fără erori și handlerii verificați au avut status `ok`.
 - `docs/DEMO.md` a fost adaptat fluxurilor F1–F4 actuale, păstrând pașii F5.
 
-Publicarea pe `main` folosește push obișnuit; **nu este necesar `git push --force`**.
+Push-ul HTTPS local a fost respins cu 403 pentru contul `mihaelatudor2211`.
+Conexiunea GitHub din aplicație, autentificată ca `PopanicaTudor`, are drept de scriere;
+publicarea folosește această conexiune și același arbore Git verificat. Commiturile
+locale de integrare sunt păstrate în ramura `integration/f5-local-20261114`, iar
+commitul publicat are ca părinte vârful curent al colegilor. Actualizarea lui `main`
+verifică SHA-ul așteptat și folosește `force=false`; **nu se folosește force push**.
