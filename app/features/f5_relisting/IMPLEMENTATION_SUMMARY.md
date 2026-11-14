@@ -155,8 +155,13 @@ Verificări pe codul integrat:
 - `docs/DEMO.md` a fost adaptat fluxurilor F1–F4 actuale, păstrând pașii F5.
 
 Push-ul HTTPS local a fost respins cu 403 pentru contul `mihaelatudor2211`.
-Conexiunea GitHub din aplicație, autentificată ca `PopanicaTudor`, are drept de scriere;
-publicarea folosește această conexiune și același arbore Git verificat. Commiturile
-locale de integrare sunt păstrate în ramura `integration/f5-local-20261114`, iar
-commitul publicat are ca părinte vârful curent al colegilor. Actualizarea lui `main`
-verifică SHA-ul așteptat și folosește `force=false`; **nu se folosește force push**.
+Conexiunea GitHub din aplicație, autentificată ca `PopanicaTudor`, raportează
+`push=true` în metadatele repository-ului, dar crearea efectivă a arborelui a fost
+respinsă tot cu 403: `Resource not accessible by integration`. **Publicarea este
+blocată de autorizare; `origin/main` nu a fost modificat.**
+
+Commiturile locale de integrare sunt păstrate pe `main` și în ramura
+`integration/f5-local-20261114`. După acordarea accesului de scriere sau configurarea
+unui cont Git autorizat, se poate relua cu `git pull --no-rebase origin main`,
+verificare dacă au apărut modificări noi, apoi `git push origin main`.
+**Nu este necesar și nu s-a folosit force push.**
