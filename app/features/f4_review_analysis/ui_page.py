@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from ui import api_client as api
-from ui.components import act, flash, load, multiline, property_names, short_time, show_flash
+from ui.components import act, flash_outcome, load, multiline, property_names, short_time, show_flash
 
 PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 PRIORITY_COLOR = {"high": "red", "medium": "orange", "low": "blue"}
@@ -23,8 +23,14 @@ names = property_names(properties)
 everything = {"id": None, "name": "All properties"}
 choice = st.selectbox("Property", [everything, *properties], format_func=lambda p: p["name"])
 if st.button("Analyse reviews", type="primary"):
-    if act(api.post, "/sim/review-analysis", {"property_id": choice["id"]}, wait=True) is not None:
-        flash(f"Analysis finished for {choice['name']}. See Notifications for what changed.")
+    result = act(api.post, "/sim/review-analysis", {"property_id": choice["id"]}, wait=True)
+    if result is not None:
+        flash_outcome(
+            result,
+            f"Analysis finished for {choice['name']}. See Notifications for what changed.",
+            f"Analysis for {choice['name']} is still running. Refresh this page in a moment; "
+            "the result also arrives in Notifications.",
+        )
         st.rerun()
 
 insights = load("/f4/insights", property_id=choice["id"])

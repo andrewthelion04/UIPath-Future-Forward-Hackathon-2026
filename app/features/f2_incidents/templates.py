@@ -35,11 +35,15 @@ def staff_thanks(staff_name: str | None, task_id: str) -> str:
     return f"Thanks {first_name(staff_name)}, task {task_id} is marked as done."
 
 
-def relocation_offer(guest: str, property_name: str, description: str, target: str, address: str) -> str:
+def relocation_offer(
+    guest: str, property_name: str, description: str, target: str, address: str,
+    listing_url: str | None = None,
+) -> str:
+    listing = f" Here is the place: {listing_url}" if listing_url else ""
     return (
         f"Hello {first_name(guest)}, we are very sorry: there is an issue at {property_name} "
         f"({problem_phrase(description)}). To keep your stay comfortable, we can move you to {target} "
-        f"({address}) for the rest of your stay, at no extra cost. Would you like to move? "
+        f"({address}) for the rest of your stay, at no extra cost.{listing} Would you like to move? "
         "Just reply to this message."
     )
 

@@ -5,18 +5,19 @@ Mesaj de la oaspete → bucla agentului, cu unelte care citesc datele noastre �
 | | |
 |---|---|
 | **Ascultă** | `GuestMessageReceived`; `ApprovalDecided` pentru aprobările proprii (`guest_request`) |
-| **Emite** | `GuestMessageSent`, `IssueReported` (către F2), `ApprovalRequested` |
+| **Emite** | `GuestMessageSent`, `IssueReported` (către F2), `ApprovalRequested`, `GuestOfferAnswered` (răspunsul oaspetelui la o ofertă publicată de alt feature) |
 | **Date deținute** | niciun tabel propriu; promptul din `prompts/system.md` |
 | **Endpointuri** | niciunul propriu; rulările se văd la `GET /agent/runs?feature=f3_guest_copilot` |
 | **Porturi** | `llm`, `calendar`, `channel` |
 
-Uneltele agentului: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `report_issue`, `finish`.
+Uneltele agentului: `get_booking_context`, `check_calendar`, `get_conversation`, `send_guest_reply`, `request_host_approval`, `answer_offer`, `report_issue`, `finish`.
 
 Trei comportamente de încercat din *Guest chat*:
 
 - o întrebare („What time is check-in?”) primește răspuns direct, din datele rezervării;
 - o cerere de excepție („Could we check in early?”) ajunge la host ca aprobare, iar oaspetele află că hostul va confirma;
-- o problemă („The air conditioning is broken”) pornește fluxul de incidente din F2.
+- o problemă („The air conditioning is broken”) pornește fluxul de incidente din F2;
+- cât timp există un subiect deschis pe rezervare (`open_topics`, ex. un incident), copilotul răspunde la întrebări despre el din faptele publicate, trimite linkul anunțului la cerere, transmite un „da” sau „nu” clar la o ofertă (`answer_offer`) și predă hostului ce nu poate rezolva (compensații, altă proprietate).
 
 Pentru demonstrația cu rezervările seed din iunie 2026, pornește API-ul cu `FIXED_TODAY=2026-06-01` în mediul demo. Cererile pentru o sosire deja trecută sau o ședere încheiată nu primesc permisiuni noi automat.
 

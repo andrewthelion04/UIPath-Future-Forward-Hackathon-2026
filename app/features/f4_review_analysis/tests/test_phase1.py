@@ -12,6 +12,7 @@ from app.core.agent.tools import RunContext
 from app.core.clock import utcnow
 from app.core.contracts.models import Review, ReviewBatch
 from app.features.f4_review_analysis.analysis import (
+    NOTHING_TO_FIX,
     AddRecommendationArgs,
     Recommendation,
     build_tools,
@@ -261,7 +262,8 @@ def test_unchanged_reviews_without_a_finished_analysis_are_analysed_again(settin
         analyse(client, "Old Town Studio")  # aceleași recenzii, dar fără analiză -> rulează
         assert len(client.get("/f4/snapshots").json()) == 1
         (insight,) = client.get("/f4/insights").json()
-        assert insight["items"] == [] and insight["recommendations"] == "Nothing to fix."
+        # Textul liber al modelului nu ajunge la host: fără recomandări înregistrate, textul e al nostru.
+        assert insight["items"] == [] and insight["recommendations"] == NOTHING_TO_FIX
 
 
 def test_source_failure_still_uses_the_last_snapshot_and_tells_the_host(settings):
@@ -287,12 +289,12 @@ def test_all_properties_fan_out_into_one_event_and_handler_each(client):
     analyse(client)
 
     per_property = events_of(client, "PropertyReviewAnalysisRequested")
-    assert len(per_property) == 4
-    assert len({e["payload"]["property_id"] for e in per_property}) == 4
+    assert len(per_property) == 6
+    assert len({e["payload"]["property_id"] for e in per_property}) == 6
     (request,) = events_of(client, "ReviewAnalysisRequested")
     assert all(e["correlation_id"] == request["correlation_id"] for e in per_property)
     assert all(e["handlers"][0]["status"] == "ok" for e in per_property)
-    assert len(client.get("/f4/insights").json()) == 4
+    assert len(client.get("/f4/insights").json()) == 6
 
 
 def test_one_failing_property_does_not_stop_the_others(settings):
@@ -303,7 +305,7 @@ def test_one_failing_property_does_not_stop_the_others(settings):
         analyse(client)
 
         insights = client.get("/f4/insights").json()
-        assert len(insights) == 3 and studio["id"] not in {i["property_id"] for i in insights}
+        assert len(insights) == 5 and studio["id"] not in {i["property_id"] for i in insights}
         skipped = [n for n in client.get("/notifications").json() if "skipped" in n["title"]]
         assert [n["property_id"] for n in skipped] == [studio["id"]]
 
@@ -325,5 +327,5 @@ def test_each_property_handler_has_its_own_timeout(settings, monkeypatch):
 
         per_property = events_of(client, "PropertyReviewAnalysisRequested")
         statuses = sorted(e["handlers"][0]["status"] for e in per_property)
-        assert statuses.count("ok") == 3 and len(statuses) == 4  # doar cea lentă a expirat
-        assert len(client.get("/f4/insights").json()) == 3
+        assert statuses.count("ok") == 5 and len(statuses) == 6  # doar cea lentă a expirat
+        assert len(client.get("/f4/insights").json()) == 5

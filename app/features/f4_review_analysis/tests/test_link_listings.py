@@ -24,7 +24,9 @@ def test_link_all_creates_mappings_idempotently_and_reports_unlinked(client):
     assert (mapping["external_id"], mapping["internal_id"]) == ("https://www.airbnb.com/rooms/1", studio["id"])
     assert any(line.startswith("LINKED   Old Town Studio") for line in report)
     assert any(line.startswith("MISSING  Nowhere") for line in report)
-    assert any(line.startswith("UNLINKED Brasov Mountain View Loft") for line in report)
+    # Proprietățile care nu apar în fișierul dat rămân nelegate și sunt raportate ca atare.
+    unlinked = {line.split(":")[0].removeprefix("UNLINKED ") for line in report if line.startswith("UNLINKED")}
+    assert unlinked == {p["name"] for p in client.get("/properties").json()} - {"Old Town Studio"}
 
 
 def test_a_url_already_linked_elsewhere_is_reported_as_a_conflict(client):

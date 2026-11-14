@@ -33,6 +33,10 @@ function ApprovalCard({ approval, onChanged, onError }: { approval: Approval } &
         {approval.feature} · {formatTime(approval.created_at)}
       </p>
       <p className="summary">{approval.summary}</p>
+      {/* O singură opțiune: descrierea ei (ex. textul exact pentru oaspete) e ce aprobă hostul. */}
+      {single && approval.options[0]?.description && (
+        <p className="summary">{approval.options[0].description}</p>
+      )}
       {!single && (
         <fieldset disabled={busy}>
           {approval.options.map((item) => (

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 from datetime import date, datetime
 from typing import Any
@@ -31,6 +32,8 @@ from app.core.contracts.models import Review, ReviewBatch
 from app.core.id_mapper import LISTING, IdMapper
 from app.core.ids import stable_id
 from app.ports.reviews import ReviewsError
+
+logger = logging.getLogger("staypilot.apify")
 
 SOURCE = "apify"
 LISTING_CONNECTION = "airbnb"
@@ -85,6 +88,19 @@ def clean_text(value: Any) -> str | None:
     return text or None
 
 
+_ROOM = re.compile(r"/rooms/(\d+)")
+
+
+def same_listing(item_url: Any, requested_url: str) -> bool:
+    """Itemul vine de la anunțul cerut. Fără `startUrl` în item, nu avem ce verifica."""
+    if not isinstance(item_url, str) or not item_url.strip():
+        return True
+    wanted, got = _ROOM.search(requested_url), _ROOM.search(item_url)
+    if wanted and got:
+        return wanted.group(1) == got.group(1)
+    return item_url.split("?")[0].rstrip("/") == requested_url.split("?")[0].rstrip("/")
+
+
 def normalize_review(item: dict[str, Any], property_id: str) -> Review | None:
     # Traducerea (în limba din `locale`) înaintea originalului: toate recenziile într-o limbă.
     text = next(
@@ -96,6 +112,8 @@ def normalize_review(item: dict[str, Any], property_id: str) -> Review | None:
         None,
     )
     rating = _first(item, "rating", "stars", "score")
+    if isinstance(rating, bool):  # `True` e un `int` în Python: nu e o recenzie de 1 stea
+        return None
     if not isinstance(text, str) or not isinstance(rating, int | float) or not 1 <= rating <= 5:
         return None
     reviewer = item.get("reviewer") if isinstance(item.get("reviewer"), dict) else {}
@@ -161,13 +179,27 @@ class ApifyReviewsAdapter:
         items = response.json()
         if not isinstance(items, list):
             raise ReviewsError("Apify returned an unexpected payload (expected a list of items)")
-        reviews = [
-            review
-            for item in items
-            if isinstance(item, dict) and (review := normalize_review(item, property_id))
-        ]
+        # Un item al altui anunț nu devine recenzia acestei proprietăți; o recenzie repetată
+        # (același ID) se păstrează o singură dată, ca să nu denatureze media.
+        reviews: dict[str, Review] = {}
+        foreign = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if not same_listing(item.get("startUrl"), listing_url):
+                foreign += 1
+                continue
+            review = normalize_review(item, property_id)
+            if review is not None:
+                reviews.setdefault(review.id, review)
+        if foreign:
+            logger.warning(
+                "Apify returned %d item(s) of another listing for %s; ignored", foreign, property_id
+            )
+            if not reviews:
+                raise ReviewsError("Apify returned only items of another listing")
         return ReviewBatch(
-            property_id=property_id, source=SOURCE, fetched_at=utcnow(), reviews=reviews
+            property_id=property_id, source=SOURCE, fetched_at=utcnow(), reviews=list(reviews.values())
         )
 
     async def aclose(self) -> None:

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import SettingsConfigDict
 
 from app.core.agent.loop import AgentSpec
@@ -41,6 +41,9 @@ SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "system.md").read_text(enco
 MAX_REVIEW_CHARS = 400
 MAX_RECOMMENDATIONS = 5
 MAX_QUOTES = 3
+# Text scris în cod: fără recomandări înregistrate prin unealtă, nimic din textul liber al
+# modelului nu ajunge la host ca recomandare.
+NOTHING_TO_FIX = "No improvement is recommended: nothing in these reviews was recorded as a problem."
 
 Priority = Literal["high", "medium", "low"]
 PRIORITY_RANK: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
@@ -147,6 +150,25 @@ def same_reviews(snapshot: Snapshot, batch: ReviewBatch) -> bool:
     return _canonical(snapshot.reviews) == _canonical(batch.reviews)
 
 
+def checked_batch(batch: ReviewBatch, property_id: str) -> ReviewBatch:
+    """Recenziile aparțin proprietății cerute, fiecare o singură dată.
+
+    Un răspuns despre altă proprietate e o eroare a sursei (se folosește ultimul snapshot), nu
+    date de analizat. Recenziile repetate ar denatura numărul, media și frecvența problemelor.
+    """
+    if batch.property_id != property_id:
+        raise ValueError(f"the source returned reviews of {batch.property_id}, not {property_id}")
+    foreign = sorted({review.property_id for review in batch.reviews} - {property_id})
+    if foreign:
+        raise ValueError(f"the source mixed in reviews of other properties: {', '.join(foreign)}")
+    unique: dict[str, Review] = {}
+    for review in batch.reviews:
+        unique.setdefault(review.id, review)
+    if len(unique) == len(batch.reviews):
+        return batch
+    return batch.model_copy(update={"reviews": list(unique.values())})
+
+
 def _canonical(reviews: list[Review]) -> list[str]:
     return sorted(to_json(review.model_dump(mode="json")) for review in reviews)
 
@@ -163,8 +185,21 @@ def quote_found(quote: str, reviews: list[Review]) -> bool:
     fragments = [part for part in fragments if part]
     if not fragments:
         return False
-    texts = [_normalize(review.text) for review in reviews]
-    return any(all(fragment in text for fragment in fragments) for text in texts)
+    return any(_in_order(fragments, _normalize(review.text)) for review in reviews)
+
+
+def _in_order(fragments: list[str], text: str) -> bool:
+    """Fragmentele apar în text în ordinea dată, fără să se suprapună.
+
+    „dirty ... not” nu e un citat din „was not dirty”: ordinea inversată schimbă sensul.
+    """
+    position = 0
+    for fragment in fragments:
+        found = text.find(fragment, position)
+        if found < 0:
+            return False
+        position = found + len(fragment)
+    return True
 
 
 def format_recommendations(items: list[Recommendation]) -> str:
@@ -226,6 +261,12 @@ class AddRecommendationArgs(ToolArgs):
         max_length=MAX_QUOTES,
         description="Exact fragments copied from the reviews that support this recommendation.",
     )
+
+    @field_validator("theme", "action", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> Any:
+        # Lungimile minime se aplică textului real, nu spațiilor din jur.
+        return value.strip() if isinstance(value, str) else value
 
 
 def build_tools() -> list[Tool]:
@@ -309,6 +350,9 @@ class ReviewAnalysis:
         self.spec = AgentSpec(
             name=AGENT_NAME, feature=ctx.feature, system_prompt=SYSTEM_PROMPT, tools=build_tools()
         )
+        # O singură analiză per proprietate la un moment dat: două cereri simultane nu rulează
+        # agentul de două ori, iar analiza pornită prima nu ajunge „ultima” peste una mai nouă.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     # --- Handleri ----------------------------------------------------------------
 
@@ -343,7 +387,8 @@ class ReviewAnalysis:
             )
             return
         try:
-            await self._analyse(prop)
+            async with self._locks.setdefault(prop.id, asyncio.Lock()):
+                await self._analyse(prop)
         except Exception as exc:  # eroarea e raportată hostului, nu ajunge la event bus
             logger.exception("Review analysis failed for %s", prop.id)
             ctx.notify(
@@ -452,6 +497,7 @@ class ReviewAnalysis:
             batch = await asyncio.wait_for(
                 self._ctx.reviews.fetch_reviews(prop.id), timeout=self.settings.fetch_timeout_s
             )
+            batch = checked_batch(batch, prop.id)
         except Exception as exc:
             problem = (
                 f"timeout after {self.settings.fetch_timeout_s:g}s"
@@ -498,9 +544,9 @@ class ReviewAnalysis:
         previous: Insight | None,
     ) -> Insight:
         stats = rating_stats(snapshot.reviews)
-        evidence = list(result.evidence)
-        for item in items:  # citatele verificate fac parte din dovezi
-            evidence.extend(f'{item.theme}: "{q}"' for q in item.quotes if q not in " ".join(evidence))
+        # Dovezile sunt doar citatele verificate în cod; `evidence` din `finish` e text liber
+        # al modelului și poate fi inventat, deci nu se salvează.
+        evidence = [f'{item.theme}: "{quote}"' for item in items for quote in item.quotes]
         changes = None
         if previous is not None:
             changes = compare_themes(previous.items, items)
@@ -513,7 +559,7 @@ class ReviewAnalysis:
             used_fallback=used_fallback,
             review_count=stats["count"],
             average_rating=stats["average"],
-            recommendations=format_recommendations(items) if items else result.result,
+            recommendations=format_recommendations(items) if items else NOTHING_TO_FIX,
             evidence=evidence,
             agent_run_id=result.run_id,
             created_at=utcnow(),

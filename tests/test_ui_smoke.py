@@ -110,3 +110,40 @@ def test_staff_report_form_and_two_option_approval(api):
     inbox.button(key=f"approve_{approval['id']}").click().run()
     assert not inbox.exception
     assert api.get("/incidents").json()[0]["status"] == "relocated"
+
+
+def test_single_option_approval_shows_what_the_host_approves(api):
+    """Textul exact pentru oaspete stă în descrierea opțiunii; inboxul îl arată și când e una singură."""
+    apartment = property_by_name(api, "Calea Victoriei Apartment")
+    body = {"property_id": apartment["id"], "description": "Water is leaking under the kitchen sink."}
+    api.post("/sim/staff-report", params={"wait": True}, json=body)
+    (proposal,) = api.get("/approvals").json()
+    approve(api, proposal["id"], "remediate")
+    (closure,) = api.get("/approvals").json()
+    (option,) = closure["options"]
+    assert option["description"].startswith("Guest will receive:")
+
+    inbox = run_page(ROOT_DIR / "ui" / "views" / "approvals.py")
+
+    assert option["description"] in [str(block.value) for block in inbox.markdown]
+
+
+def test_host_can_record_the_guests_answer_after_a_direct_conversation(api, monkeypatch):
+    """Copilotul a predat discuția; hostul notează în pagina F2 ce a hotărât oaspetele."""
+    container = api.app.state.container
+    service = next(
+        s.handler.__self__ for s in container.bus.subscriptions() if s.name == "f2_incidents.on_issue_reported"
+    )
+    monkeypatch.setattr(service.settings, "sim_guest_answer", "off")
+    apartment = property_by_name(api, "Calea Victoriei Apartment")
+    body = {"property_id": apartment["id"], "description": "The air conditioning is not working"}
+    api.post("/sim/staff-report", params={"wait": True}, json=body)
+    (incident,) = api.get("/incidents").json()
+    approve(api, incident["approval_id"], "relocate")
+    assert api.get("/incidents").json()[0]["status"] == "awaiting_guest"
+
+    page = run_page(ROOT_DIR / "app" / "features" / "f2_incidents" / "ui_page.py")
+    page.button(key=f"stay_{incident['id']}").click().run()
+
+    assert not page.exception
+    assert api.get("/incidents").json()[0]["status"] == "remediation_scheduled"

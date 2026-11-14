@@ -108,7 +108,8 @@ class GuestCopilot:
             property_id=booking.property_id,
         )
         # Fallback explicit: dacă agentul nu a răspuns, hostul află și răspunde el.
-        if result.status != "finished" or state["replies_sent"] == 0:
+        handled = state["replies_sent"] > 0 or state.get("offer_answered")
+        if result.status != "finished" or not handled:
             reason = result.error or result.result or result.status
             ctx.notify(
                 f"Copilot could not answer {booking.guest_name}: please reply manually",

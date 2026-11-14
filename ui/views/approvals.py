@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from ui import api_client as api
-from ui.components import act, flash, load, multiline, short_time, show_flash
+from ui.components import act, flash_outcome, load, multiline, short_time, show_flash
 
 st.title("Approvals")
 st.caption("Every action with impact waits here for the host's decision.")
@@ -21,7 +21,11 @@ def decide(approval: dict, decision: str, option: str | None, note: str) -> None
     result = act(api.post, f"/approvals/{approval['id']}/decision", body, wait=True)
     if result is not None:
         verb = "Approved" if decision == "approve" else "Rejected"
-        flash(f"{verb}: {approval['title']}")
+        flash_outcome(
+            result,
+            f"{verb}: {approval['title']}",
+            f"{verb}: {approval['title']}. The action is still running; see Notifications for the result.",
+        )
         st.rerun()
 
 
@@ -41,6 +45,9 @@ for approval in pending:
                 captions=[option["description"] for option in options],
                 key=f"option_{approval['id']}",
             )
+        elif options[0].get("description"):
+            # O singură opțiune: descrierea ei (ex. textul exact pentru oaspete) e tot ce aprobă hostul.
+            st.markdown(multiline(options[0]["description"]))
         note = st.text_input("Note (optional)", key=f"note_{approval['id']}")
         approve_column, reject_column, _ = st.columns([1, 1, 4])
         label = "Approve" if len(options) > 1 else options[0]["label"]

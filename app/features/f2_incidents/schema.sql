@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS f2_incidents (
     guest_deadline         TEXT,
     closure_round          INTEGER NOT NULL DEFAULT 0,
     closure_approval_id    TEXT,
-    closure_message        TEXT
+    closure_message        TEXT,
+    guest_note             TEXT    -- ce i se poate spune oaspetelui cât timp nimic nu e hotărât
 );
 
 CREATE TABLE IF NOT EXISTS f2_incident_reports (

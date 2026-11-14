@@ -20,6 +20,14 @@ La o anulare de ultim moment, caută în datele de piață cel mai ieftin anunț
 - `GET /f5/proposals` și pagina de UI arată propunerile; pagina afișează și creditul sursei de date.
 - Setări proprii: `F5_UNDERCUT_PCT`, `F5_MARKET_TIMEOUT_S`, `F5_CALENDAR_TIMEOUT_S`, `F5_TIMEZONE` (implicit Europe/Bucharest).
 - Snapshot real Inside Airbnb Atena, 22 septembrie 2026, verificat: `app/adapters/inside_airbnb/local_data/listings.csv.gz`; opt rânduri reale reduse la coloanele necesare sunt versionate în `fixtures/`. Detalii de configurare și licență în README-ul adaptorului.
+- **După auditul de integrare (14 noiembrie 2026)** (`tests/test_integration_guards.py`):
+  - la aprobare se recitește limita de reducere a hostului: dacă între timp a scăzut și o noapte propusă ar coborî sub noul prag, propunerea devine `conflict` și nu se scrie nimic;
+  - termenul de expirare urmează ora de check-in curentă când aceasta a fost mutată mai devreme (nu se prelungește dacă a fost mutată mai târziu);
+  - la expirare, aprobarea din inbox e retrasă (`ctx.approvals.withdraw`), deci hostul nu mai poate aproba ceva fără efect;
+  - un handler oprit la jumătate (timeoutul event bus-ului) consemnează `failed` cu nopțile deja scrise, în loc să lase propunerea în `awaiting_approval`;
+  - recitirea calendarului și scrierea prețurilor stau sub lockul comun `ctx.calendar.lock(property_id)`, deci nu se intercalează cu o relocare F2 pe aceleași nopți;
+  - o noapte cu preț pozitiv nu devine gratuită prin rotunjire: prețul propus e cel puțin 0,01;
+  - un `ApprovalDecided` fără decizia salvată în `approvals` nu mai ajunge la handler (filtru comun în nucleu).
 
 ## Decizii
 - Fără LLM în schelet — prețul trebuie să vină din date și din reguli, deci e calculat în cod.
@@ -75,7 +83,7 @@ Aceste reguli sunt pentru Claude Code. Scopul: implementarea să iasă bine din 
 - Scrierea în calendarul Hospitable e stub; la OwnerRez doar prețul (`spotrates`), netestat.
 - Datele de piață reale (Inside Airbnb) sunt snapshot-uri trimestriale dintr-un oraș configurat, nu prețuri live pentru orașul proprietății.
 - Portul comun nu oferă verificare și scriere atomică (CAS) sau tranzacții între nopți; nu putem exclude o rezervare externă apărută după recitire. Suportul ar necesita un PR separat în contractele comune.
-- Expirarea este evaluată la acces/decizie, fără worker; inboxul comun nu are stare `expired`, dar propunerea F5 are și blochează orice decizie târzie.
+- Expirarea este evaluată la acces/decizie, fără worker: aprobarea dispare din inbox abia când propunerea e citită sau decisă după termen.
 - Verificarea UI a fost automatizată cu Streamlit AppTest; aspectul vizual în browser și conexiunile PMS de producție rămân de verificat manual.
 - Raporturile dintre nopți se păstrează în limita rotunjirii la cent; pragul rotunjit în sus are prioritate.
 

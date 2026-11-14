@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.container import Container
-from app.core.id_mapper import MappingConflict
+from app.core.id_mapper import PROPERTY, RESERVATION, MappingConflict
 from app.core.sync_service import SyncReport, UnknownProvider
 from app.ports.pms import PmsCapabilities
 
@@ -47,6 +47,22 @@ def build_router(c: Container) -> APIRouter:
     @router.put("/mappings")
     async def put_mapping(body: MappingIn) -> dict[str, str]:
         """Mapare manuală (depanare), ex. proprietate internă -> URL de anunț Airbnb."""
+        # O entitate internă aparține unei singure conexiuni PMS: un webhook de pe altă
+        # conexiune ar citi contextul și ar răspunde prin PMS-ul greșit.
+        if c.pms.get(body.connection) is not None:
+            owner = None
+            if body.entity_type == RESERVATION:
+                booking = c.world.get_booking(body.internal_id)
+                owner = booking.pms_provider if booking else None
+            elif body.entity_type == PROPERTY:
+                prop = c.world.get_property(body.internal_id)
+                owner = prop.pms_provider if prop else None
+            if owner is not None and owner != body.connection:
+                raise HTTPException(
+                    409,
+                    f"{body.entity_type} {body.internal_id} belongs to the '{owner}' connection "
+                    f"and cannot be mapped on '{body.connection}'",
+                )
         try:
             c.ids.link(body.connection, body.entity_type, body.external_id, body.internal_id)
         except MappingConflict as exc:

@@ -459,7 +459,7 @@ async def test_ownerrez_calendar_uses_safe_property_fallback_when_rates_unavaila
 
     def respond(request):
         if request.url.path == "/v2/bookings":
-            return httpx.Response(200, json={"limit": 100})
+            return httpx.Response(200, json={"items": [], "limit": 100})
         if request.url.path == "/v2/properties":
             return httpx.Response(200, json={"items": [{"id": 1, "base_price": base_price, "currency_code": "USD"}]})
         if request.url.path == "/v2/spotrates":
@@ -470,6 +470,23 @@ async def test_ownerrez_calendar_uses_safe_property_fallback_when_rates_unavaila
     try:
         (day,) = await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
         assert (day.available, day.price, day.currency) == (True, expected, "USD")
+    finally:
+        await adapter.aclose()
+
+
+async def test_ownerrez_calendar_rejects_a_bookings_response_without_items(container):
+    """Un 200 fără lista de rezervări nu are voie să arate nopți libere (audit C05)."""
+    container.ids.link("ownerrez", "property", "1", "prop_beach")
+
+    def respond(request):
+        if request.url.path == "/v2/bookings":
+            return httpx.Response(200, json={"unexpected": "bookings data is absent"})
+        return httpx.Response(200, json={"items": []})
+
+    adapter = ownerrez(container, Recorder(respond))
+    try:
+        with pytest.raises(PmsError, match="no item list"):
+            await adapter.get_days("prop_beach", date(2026, 7, 10), date(2026, 7, 11))
     finally:
         await adapter.aclose()
 
@@ -500,7 +517,7 @@ async def test_ownerrez_calendar_preserves_cached_currency_and_base_price_during
                 return httpx.Response(200, json={"items": [{"id": 1, "base_price": 87.5, "currency_code": "USD"}]})
             return httpx.Response(503, text="property metadata temporarily unavailable")
         if request.url.path == "/v2/bookings":
-            return httpx.Response(200, json={})
+            return httpx.Response(200, json={"items": []})
         if request.url.path == "/v2/spotrates":
             return httpx.Response(200, json={"items": [{"property_id": 1, "date": "2026-07-10", "amount": 149}]})
         raise AssertionError(request.url)

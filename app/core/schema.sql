@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS properties (
     base_price   REAL NOT NULL DEFAULT 0,
     currency     TEXT NOT NULL DEFAULT 'EUR',
     pms_provider TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+    updated_at   TEXT NOT NULL,
+    listing_url  TEXT                -- pe bazele vechi îl adaugă `Container.init_schema`
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
@@ -166,3 +167,21 @@ CREATE TABLE IF NOT EXISTS agent_steps (
     created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps (run_id, idx);
+
+-- Subiectele deschise cu oaspetele unei rezervări (ex. un incident în curs). Le scrie
+-- feature-ul care gestionează subiectul; le citește cine vorbește cu oaspetele.
+CREATE TABLE IF NOT EXISTS guest_topics (
+    id           TEXT PRIMARY KEY,
+    booking_id   TEXT NOT NULL,
+    feature      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    facts        TEXT NOT NULL DEFAULT '{}',   -- doar ce are voie să afle oaspetele
+    offer        TEXT,                         -- JSON: question, details, expires_at
+    offer_status TEXT,                         -- pending | accepted | declined | withdrawn
+    status       TEXT NOT NULL,                -- open | closed
+    valid_until  TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guest_topics_booking ON guest_topics (booking_id, status);

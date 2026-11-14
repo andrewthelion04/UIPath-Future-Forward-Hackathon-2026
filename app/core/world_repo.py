@@ -26,6 +26,7 @@ def _property(row: dict[str, Any]) -> Property:
         base_price=row["base_price"],
         currency=row["currency"],
         pms_provider=row["pms_provider"],
+        listing_url=row.get("listing_url"),
     )
 
 
@@ -80,13 +81,14 @@ class WorldRepository:
     def upsert_property(self, prop: Property) -> None:
         self._db.execute(
             "INSERT INTO properties (id, name, city, address, bedrooms, max_guests, amenities, "
-            "base_price, currency, pms_provider, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "base_price, currency, pms_provider, listing_url, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET name = excluded.name, city = excluded.city, "
             "address = excluded.address, bedrooms = excluded.bedrooms, "
             "max_guests = excluded.max_guests, amenities = excluded.amenities, "
             "base_price = excluded.base_price, currency = excluded.currency, "
-            "pms_provider = excluded.pms_provider, updated_at = excluded.updated_at",
+            "pms_provider = excluded.pms_provider, listing_url = excluded.listing_url, "
+            "updated_at = excluded.updated_at",
             (
                 prop.id,
                 prop.name,
@@ -98,6 +100,7 @@ class WorldRepository:
                 prop.base_price,
                 prop.currency,
                 prop.pms_provider.value,
+                prop.listing_url,
                 utcnow().isoformat(),
             ),
         )

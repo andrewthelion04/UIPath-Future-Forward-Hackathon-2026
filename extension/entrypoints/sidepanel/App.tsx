@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import ApprovalsInbox from '@/components/ApprovalsInbox';
 import IncidentsList, { isOpen } from '@/components/IncidentsList';
@@ -26,24 +26,38 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  // Numărul de ordine al ultimei reîmprospătări pornite și al ultimei aplicate: un răspuns
+  // vechi, sosit după unul mai nou, nu are voie să readucă în ecran o stare depășită.
+  const started = useRef(0);
+  const applied = useRef(0);
+
   const refresh = useCallback(async () => {
-    try {
-      const [nextApprovals, nextNotifications, nextProperties, nextIncidents] = await Promise.all([
+    const order = ++started.current;
+    // Fiecare listă se încarcă independent: una căzută nu le golește pe celelalte.
+    const [nextApprovals, nextNotifications, nextProperties, nextIncidents] =
+      await Promise.allSettled([
         api.approvals(),
         api.notifications(),
         api.properties(),
         api.incidents(),
       ]);
-      setApprovals(nextApprovals);
-      setNotifications(nextNotifications);
-      setProperties(nextProperties);
-      setIncidents(nextIncidents);
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setLoaded(true);
-    }
+    if (order < applied.current) return;
+    applied.current = order;
+    if (nextApprovals.status === 'fulfilled') setApprovals(nextApprovals.value);
+    if (nextNotifications.status === 'fulfilled') setNotifications(nextNotifications.value);
+    if (nextProperties.status === 'fulfilled') setProperties(nextProperties.value);
+    if (nextIncidents.status === 'fulfilled') setIncidents(nextIncidents.value);
+    const failed = [nextApprovals, nextNotifications, nextProperties, nextIncidents].find(
+      (result) => result.status === 'rejected',
+    );
+    setError(
+      failed?.status === 'rejected'
+        ? failed.reason instanceof Error
+          ? failed.reason.message
+          : String(failed.reason)
+        : null,
+    );
+    setLoaded(true);
   }, []);
 
   useEffect(() => {

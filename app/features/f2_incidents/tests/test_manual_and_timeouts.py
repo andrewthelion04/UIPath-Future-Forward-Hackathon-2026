@@ -146,7 +146,11 @@ def test_relocation_target_taken_meanwhile_leads_to_a_new_proposal(manual):
     assert len(manual.get(f"/bookings/{lukas['id']}/messages").json()) == 1  # nicio confirmare
     (new_approval,) = manual.get("/approvals").json()
     assert new_approval["id"] != approval["id"]
-    assert [o["key"] for o in new_approval["options"]] == ["remediate"]  # nu mai e loc liber
+    # Propunerea nouă oferă următoarea proprietate compatibilă liberă, nu pe cea ocupată.
+    second_choice = property_by_name(manual, "Aviatiei Family Apartment")
+    assert incident["relocation_property_id"] == second_choice["id"] != target["id"]
+    assert [o["key"] for o in new_approval["options"]] == ["relocate", "remediate"]
+    assert "Aviatiei Family Apartment" in new_approval["options"][0]["label"]
     assert any("no longer free" in n["title"] for n in manual.get("/notifications").json())
 
 

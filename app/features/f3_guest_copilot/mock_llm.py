@@ -25,6 +25,32 @@ NUMBER_WORDS = {word: number for number, word in enumerate(
 NUMBER = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
 
 
+# Subiectele deschise (ex. un incident) și oferta făcută oaspetelui.
+# Un „ok, thanks” nu acceptă o mutare: e nevoie de un acord explicit sau de un „da” singur.
+ACCEPT = re.compile(
+    r"\b(accept|move us|go for it|sounds good|yes,? please|let'?s (?:do it|move|go)|"
+    r"we(?:'ll| will| would like to| want to) (?:take it|move))\b|"
+    r"\b(?:yes|yeah|ok(?:ay)?|sure)\b.*\b(?:move|relocat|take it)|"
+    r"^(?:yes|yeah|yep|sure|ok(?:ay)?)[\s.!]*$"
+)
+DECLINE = re.compile(
+    r"^no\b|\b(no,? thanks?|no,? thank you|decline|prefer to stay|rather stay|we(?:'ll| will)? stay|"
+    r"stay (?:here|put|where we are)|(?:don'?t|do not) want to move|not (?:going to )?move)\b"
+)
+DETAIL_WORDS = (
+    "photo", "picture", "link", "listing", "look like", "parking", "bedroom", "how many", "how big",
+    "where is", "address", "how far", "amenit", "balcony", "washer", "details", "more about",
+    "tell me about", "what is it like", "what's it like", "sleeps",
+)
+STATUS_WORDS = ("when", "how long", "fixed", "repair", "update", "status", "any news", "technician", "happening")
+HANDOVER_WORDS = (
+    "not happy", "unacceptable", "speak to", "talk to", "call me", "manager", "host directly",
+    "compensation", "refund", "discount", "complain", "not satisfied", "another apartment",
+    "different apartment", "other option",
+)
+WHERE_WORDS = ("address", "where", "which apartment", "new place", "location")
+
+
 def guest_text(request: ChatRequest) -> str:
     match = re.search(r"<<<\n(.*?)\n>>>", objective_text(request), re.DOTALL)
     return match.group(1).strip() if match else ""
@@ -120,6 +146,7 @@ def _first_name(context: dict[str, Any]) -> str:
 def _reply_or_finish(
     request: ChatRequest, done: list[str], text: str, evidence: list[str],
     *, host_follow_up: bool = False, approval: dict[str, Any] | None = None, prior_replies: int = 0,
+    follow_up_note: str | None = None,
 ) -> ChatMessage:
     if prior_replies and failed(last_result(request, "send_guest_reply")):
         return finish("The first reply could not be delivered; the host must follow up.", evidence,
@@ -131,6 +158,8 @@ def _reply_or_finish(
         }
         if host_follow_up:
             args["host_follow_up"] = True
+            if follow_up_note:
+                args["follow_up_note"] = follow_up_note
         if approval:
             args.update(approval_id=approval["approval_id"], request=approval["request"])
         return call("send_guest_reply", **args)
@@ -210,6 +239,99 @@ def _fact_parts(text: str, context: dict[str, Any], *, include_standard: bool) -
     return parts, evidence, follow_up
 
 
+def _place_description(details: dict[str, Any]) -> list[str]:
+    amenities = ", ".join(str(item).replace("_", " ") for item in details.get("amenities", []))
+    parts = [
+        f"{details.get('name')} is at {details.get('address')}.",
+        f"It has {details.get('bedrooms')} bedroom(s) and sleeps {details.get('sleeps')}"
+        + (f", with {amenities}." if amenities else "."),
+    ]
+    if details.get("listing_url"):
+        parts.append(f"Photos and the full description are here: {details['listing_url']}")
+    return parts
+
+
+def _topic_flow(
+    request: ChatRequest, text: str, context: dict[str, Any], done: list[str]
+) -> ChatMessage | None:
+    """Mesajul privește un subiect deschis (incident, ofertă)? Altfel None: fluxul obișnuit."""
+    topics = context.get("open_topics") or []
+    if not topics:
+        return None
+    lowered = text.lower()
+    name = _first_name(context)
+    pending = next((t for t in topics if (t.get("offer") or {}).get("status") == "pending"), None)
+    answered = "answer_offer" in done
+
+    if answered:
+        result = last_result(request, "answer_offer")
+        if failed(result):
+            return _reply_or_finish(
+                request, done,
+                f"Hi {name}, I could not record your answer automatically. The host will contact you directly.",
+                [str(result)], host_follow_up=True, follow_up_note=f'Guest answered an offer: "{text}"',
+            )
+        return finish("The guest's answer to the offer was recorded and acknowledged.",
+                      [f"answer_offer: {result.get('choice')}"],
+                      reason="The host's team confirms the outcome separately.")
+
+    if any(word in lowered for word in HANDOVER_WORDS):
+        return _reply_or_finish(
+            request, done,
+            f"Hi {name}, I understand. I have asked the host to contact you directly about this, "
+            "and they will get back to you as soon as possible.",
+            [f"open topic: {topics[0].get('title')}"],
+            host_follow_up=True, follow_up_note=f'Guest wants the host directly: "{text}"',
+        )
+
+    is_question = "?" in lowered
+    if pending is not None and any(word in lowered for word in DETAIL_WORDS):
+        details = pending["offer"].get("details") or {}
+        parts = _place_description(details)
+        if details.get("extra_cost") == "none":
+            parts.append("The move is at no extra cost.")
+        parts.append("Would you like to move there?")
+        return _reply_or_finish(request, done, f"Hi {name}, " + " ".join(parts),
+                                [f"offer details: {details.get('name')}"])
+
+    moved = next((t for t in topics if "current_accommodation" in (t.get("facts") or {})), None)
+    if moved is not None and any(word in lowered for word in WHERE_WORDS):
+        place = moved["facts"]["current_accommodation"]
+        parts = [f"you are now staying at {place.get('name')}, {place.get('address')}."]
+        if place.get("listing_url"):
+            parts.append(f"The listing is here: {place['listing_url']}")
+        if moved["facts"].get("check_in_details"):
+            parts.append(str(moved["facts"]["check_in_details"]))
+        return _reply_or_finish(request, done, f"Hi {name}, " + " ".join(parts),
+                                [f"moved to {place.get('name')}"])
+
+    if is_question and any(word in lowered for word in STATUS_WORDS):
+        facts = topics[0].get("facts") or {}
+        if facts.get("repair_estimate"):
+            estimate = str(facts["repair_estimate"])
+            when = estimate if estimate.startswith("as soon") else f"in {estimate}"
+            status = f"The repair is scheduled with our maintenance team and should be done {when}."
+        elif pending is not None:
+            stays = str(facts.get("if_the_guest_stays", "")).replace("The repair", "the repair")
+            status = (f"We offered you a move to {pending['offer']['details'].get('name')}. "
+                      f"If you prefer to stay, {stays}")
+        else:
+            status = str(facts.get("status", "")).replace("the guest's", "your").replace("the guest", "you")
+        return _reply_or_finish(
+            request, done,
+            f"Hi {name}, here is the latest on the problem ({facts.get('problem')}). {status}",
+            [f"open topic: {topics[0].get('title')}"],
+        )
+
+    # O întrebare nu e un răspuns: oferta se acceptă sau se refuză doar printr-o afirmație clară.
+    if pending is not None and not is_question:
+        choice = "decline" if DECLINE.search(lowered) else "accept" if ACCEPT.search(lowered) else None
+        if choice:
+            return call("answer_offer", topic_id=pending["topic_id"], choice=choice,
+                        reason=f"The guest clearly wants to {choice} the offer made by the host.")
+    return None
+
+
 def policy(request: ChatRequest) -> ChatMessage:
     text = guest_text(request)
     done = called_tools(request)
@@ -219,6 +341,9 @@ def policy(request: ChatRequest) -> ChatMessage:
     if failed(context) or not isinstance(context, dict):
         return finish("Could not read the booking data; the host must answer.", [str(context)],
                       reason="The data tool failed and I must not invent facts.")
+    topic_step = _topic_flow(request, text, context, done)
+    if topic_step is not None:
+        return topic_step
     issue = any(word in text.lower() for word in ISSUE_WORDS)
     if issue and "report_issue" not in done:
         return call("report_issue", description=text, severity="medium",

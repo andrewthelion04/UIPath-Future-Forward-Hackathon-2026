@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 
 from app.core.contracts.models import CalendarDay
@@ -15,6 +16,16 @@ class CalendarGateway:
     def __init__(self, connections: PmsRegistry, world: WorldRepository) -> None:
         self._connections = connections
         self._world = world
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def lock(self, property_id: str) -> asyncio.Lock:
+        """Lockul comun al calendarului unei proprietăți.
+
+        Portul nu are tranzacții, deci o secvență „citesc, verific, scriu” trebuie ținută sub
+        acest lock de orice feature care scrie în calendar; altfel două fluxuri (două
+        relocări, sau o relocare și o relistare) pot decide pe aceeași citire învechită.
+        """
+        return self._locks.setdefault(property_id, asyncio.Lock())
 
     def _connection(self, property_id: str, capability: str) -> PmsConnection:
         prop = self._world.get_property(property_id)

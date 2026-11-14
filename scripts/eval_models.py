@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Evaluează F3 prin efectele observabile, cu PMS mock și baze temporare.
+"""Evaluează copilotul prin efectele observabile, cu PMS mock și baze temporare.
+
+Scenariile cu `setup` pornesc întâi un incident real prin API (sesizare, mentenanță, propunere,
+decizia hostului), deci trec și prin agenții F2; apoi oaspetele scrie în chat.
 
 Rulare fără cheie: `.venv/Scripts/python scripts/eval_models.py --models mock`.
 Un model OpenRouter este folosit numai dacă ID-ul lui apare explicit în `--models`.
@@ -13,6 +16,8 @@ import csv
 import io
 import json
 import math
+import os
+import re
 import sys
 import tempfile
 import time
@@ -41,6 +46,9 @@ class Scenario:
     guest: str
     messages: tuple[str, ...]
     decision: str | None = None
+    # Incident pornit înaintea conversației: `offer` (ofertă de relocare trimisă), `repair`
+    # (reparație aprobată, în lucru) sau `relocated` (oaspetele a fost deja mutat).
+    setup: str | None = None
 
 
 SCENARIOS = (
@@ -85,7 +93,42 @@ SCENARIOS = (
         "mixed_issue_and_early", "A reported defect and an early check-in request are both handled.",
         "Emma Johnson", ("The shower is broken. Could we check in early at noon?",),
     ),
+    Scenario(
+        "offer_question", "A question about the offered property is answered with its listing link.",
+        "Lukas Mueller", ("Do you have photos of the other apartment? And does it have parking?",),
+        setup="offer",
+    ),
+    Scenario(
+        "offer_accept", "Accepting the offer in the chat relocates the guest with the approved text.",
+        "Lukas Mueller", ("Ok, that sounds good. Yes, please move us there.",), setup="offer",
+    ),
+    Scenario(
+        "offer_decline", "Declining the offer keeps the guest and sends the approved apology.",
+        "Lukas Mueller", ("Thanks, but we would rather stay where we are.",), setup="offer",
+    ),
+    Scenario(
+        "repair_status", "A status question is answered from the approved estimate, without a new report.",
+        "Lukas Mueller", ("Any update? When will the leak be fixed?",), setup="repair",
+    ),
+    Scenario(
+        "offer_handover", "A guest who wants compensation is handed over to the host, with no promise.",
+        "Lukas Mueller", (
+            "Honestly I am not happy with either option. I would like to speak with the host "
+            "and get a refund for tonight.",
+        ), setup="offer",
+    ),
+    Scenario(
+        "relocated_address", "After the move, the guest is told the new address.",
+        "Lukas Mueller", ("Can you remind me the address of the apartment we are staying in now?",),
+        setup="relocated",
+    ),
 )
+INCIDENT_FEATURE = "f2_incidents"
+SETUP_REPORTS = {
+    "offer": "The air conditioning is not working",
+    "relocated": "The air conditioning is not working",
+    "repair": "Water is leaking under the kitchen sink.",
+}
 
 
 @dataclass
@@ -157,6 +200,113 @@ def _decide(client: TestClient, approval_id: str, decision: str) -> dict[str, An
     return response
 
 
+def mentions_date(text: str, iso_day: str) -> bool:
+    """Data apare în text, în format ISO sau natural („June 3”, „3 June”, „3rd of June”)."""
+    day = date.fromisoformat(iso_day)
+    month, short = day.strftime("%B").lower(), day.strftime("%b").lower()
+    natural = rf"\b(?:{month}|{short})\.? {day.day}(?:st|nd|rd|th)?\b|\b{day.day}(?:st|nd|rd|th)? (?:of )?(?:{month}|{short})\b"
+    return iso_day in text or re.search(natural, text.lower()) is not None
+
+
+def prepare_incident(client: TestClient, booking: dict[str, Any], setup: str) -> dict[str, Any]:
+    """Pornește incidentul prin API și îl duce până unde începe conversația cu oaspetele."""
+    report = _json(client.post("/sim/staff-report", params={"wait": True}, json={
+        "property_id": booking["property_id"], "description": SETUP_REPORTS[setup], "staff_id": "staff_maria",
+    }))
+    if report.get("completed") is not True:
+        raise RuntimeError("The incident did not reach the host's decision in time")
+    (incident,) = _json(client.get("/incidents"))
+    proposal = next(a for a in _json(client.get("/approvals")) if a["id"] == incident["approval_id"])
+    option = "remediate" if setup == "repair" else "relocate"
+    if option not in [item["key"] for item in proposal["options"]]:
+        raise RuntimeError(f"The proposal does not offer '{option}'")
+    decided = _json(client.post(
+        f"/approvals/{proposal['id']}/decision", params={"wait": True},
+        json={"decision": "approve", "option": option},
+    ))
+    if decided.get("completed") is not True:
+        raise RuntimeError("The host decision was not fully processed")
+    if setup == "relocated":
+        answered = client.post(
+            f"/incidents/{incident['id']}/guest-answer", params={"wait": True}, json={"choice": "accept"}
+        )
+        if answered.status_code != 200:
+            raise RuntimeError("The guest's acceptance could not be recorded")
+    return _json(client.get(f"/incidents/{incident['id']}"))
+
+
+def assess_incident_effects(
+    scenario: Scenario,
+    booking: dict[str, Any],
+    before: dict[str, Any],
+    client: TestClient,
+) -> dict[str, bool]:
+    """Efectele unei conversații despre un incident: starea lui, mesajele, ce a aflat hostul."""
+    incidents = _json(client.get("/incidents"))
+    incident = next(item for item in incidents if item["id"] == before["id"])
+    messages = _json(client.get(f"/bookings/{booking['id']}/messages"))
+    events = _json(client.get("/events", params={"limit": 500}))
+    notifications = _json(client.get("/notifications"))
+    properties = {item["id"]: item for item in _json(client.get("/properties"))}
+    target = properties.get(before.get("relocation_property_id") or "", {})
+    new_messages = messages[before["_message_count"]:]
+    copilot = [m for m in new_messages if m["sender"] == "copilot" and m["status"] == "sent"]
+    from_host = [m["body"] for m in new_messages if m["sender"] == "host" and m["status"] == "sent"]
+    text = " ".join(m["body"] for m in copilot).lower()
+    drafts = before.get("drafts") or {}
+    answers = [e for e in events if e["type"] == "GuestOfferAnswered"]
+    follow_ups = [
+        n for n in notifications
+        if n["feature"] == FEATURE and n.get("booking_id") == booking["id"] and "follow-up" in n["title"]
+    ]
+    promised_money = re.search(
+        r"(?:will|'ll) (?:be )?refund|refund (?:is|has been) (?:approved|confirmed|issued|processed)|"
+        r"you(?:'ll| will) (?:get|receive) (?:a |your )?(?:refund|discount|compensation)", text,
+    )
+    checks = {
+        "guest_received_reply": bool(copilot),
+        "no_failed_deliveries": all(m["status"] == "sent" for m in new_messages if m["direction"] == "outbound"),
+        "single_incident": len(incidents) == 1 and incident["report_count"] == 1,
+        "no_money_promised": promised_money is None,
+    }
+    if scenario.name == "offer_question":
+        checks.update(
+            listing_link_shared=bool(target.get("listing_url")) and target["listing_url"] in text,
+            offer_still_open=incident["status"] == "awaiting_guest" and not answers,
+        )
+    elif scenario.name == "offer_accept":
+        checks.update(
+            guest_relocated=incident["status"] == "relocated" and incident["guest_answer"] == "accept",
+            answered_once=len(answers) == 1 and answers[0]["payload"]["choice"] == "accept",
+            approved_confirmation_sent=drafts.get("relocation_accepted") in from_host,
+        )
+    elif scenario.name == "offer_decline":
+        checks.update(
+            guest_stays=incident["guest_answer"] == "stay" and incident["status"] != "awaiting_guest",
+            answered_once=len(answers) == 1 and answers[0]["payload"]["choice"] == "decline",
+            approved_apology_sent=drafts.get("relocation_declined") in from_host,
+        )
+    elif scenario.name == "repair_status":
+        estimate = before.get("eta_hours")
+        number = f"{estimate:g}" if estimate else None
+        checks.update(
+            approved_estimate_shared=(number in text) if number else ("soon" in text),
+            repair_still_scheduled=incident["status"] == "remediation_scheduled",
+            not_reported_again=len([e for e in events if e["type"] == "IssueReported"]) == 1,
+        )
+    elif scenario.name == "offer_handover":
+        checks.update(
+            host_told_to_follow_up=bool(follow_ups),
+            offer_not_answered=not answers and incident["status"] == "awaiting_guest",
+        )
+    elif scenario.name == "relocated_address":
+        checks.update(
+            new_address_shared=bool(target.get("address")) and target["address"].lower() in text,
+            still_relocated=incident["status"] == "relocated",
+        )
+    return checks
+
+
 def assess_effects(
     scenario: Scenario,
     booking: dict[str, Any],
@@ -191,7 +341,7 @@ def assess_effects(
     if scenario.name == "grounded_info":
         checks.update(
             no_approval=not approvals,
-            check_in_from_data="15:00" in text and booking["check_in"] in text,
+            check_in_from_data="15:00" in text and mentions_date(text, booking["check_in"]),
             wifi_answer="wi-fi" in text or "wifi" in text,
             no_invented_wifi_guide="welcome guide" not in text,
         )
@@ -249,6 +399,16 @@ def assess_effects(
 def run_scenario(model: str, scenario: Scenario, *, timeout_s: float = 60) -> EvaluationResult:
     result = EvaluationResult(model=model, scenario=scenario.name)
     started = time.perf_counter()
+    # Simularea F2 e fixată pentru evaluare: oaspetele răspunde doar din chat; reparația rămâne
+    # în lucru în scenariul în care oaspetele întreabă de ea.
+    simulation = {
+        "F2_SIM_ENABLED": "true", "F2_SIM_GUEST_ANSWER": "off", "F2_SIM_STAFF_DELAY_S": "0",
+        "F2_SIM_GUEST_DELAY_S": "0", "F2_SIM_TASK_DELAY_S": "600" if scenario.setup == "repair" else "0",
+    }
+    previous = {name: os.environ.get(name) for name in simulation}
+    os.environ.update(simulation)
+    if scenario.setup and model != "mock":
+        timeout_s = max(timeout_s, 150)  # un incident pe model real are mai mulți agenți la rând
     with tempfile.TemporaryDirectory(prefix="staypilot-f3-eval-") as temporary:
         settings = evaluation_settings(model, Path(temporary) / "scenario.db", timeout_s=timeout_s)
         try:
@@ -264,6 +424,10 @@ def run_scenario(model: str, scenario: Scenario, *, timeout_s: float = 60) -> Ev
                         booking for booking in _json(client.get("/bookings"))
                         if booking["guest_name"] == scenario.guest
                     )
+                    prepared = None
+                    if scenario.setup:
+                        prepared = prepare_incident(client, booking, scenario.setup)
+                        prepared["_message_count"] = len(_json(client.get(f"/bookings/{booking['id']}/messages")))
                     _send(client, booking["id"], scenario.messages[0])
                     if scenario.decision:
                         approvals = _guest_approvals(client, booking["id"])
@@ -275,18 +439,24 @@ def run_scenario(model: str, scenario: Scenario, *, timeout_s: float = 60) -> Ev
                     for message in scenario.messages[1:]:
                         _send(client, booking["id"], message)
                     messages = _json(client.get(f"/bookings/{booking['id']}/messages"))
-                    events = _json(client.get("/events"))
-                    result.checks.update(assess_effects(
-                        scenario, booking, messages, _guest_approvals(client, booking["id"]),
-                        events, _json(client.get("/notifications")),
-                    ))
+                    events = _json(client.get("/events", params={"limit": 500}))
+                    if prepared is not None:
+                        result.checks.update(assess_incident_effects(scenario, booking, prepared, client))
+                    else:
+                        result.checks.update(assess_effects(
+                            scenario, booking, messages, _guest_approvals(client, booking["id"]),
+                            events, _json(client.get("/notifications")),
+                        ))
                     result.checks["event_handlers_succeeded"] = all(
                         handler["status"] == "ok"
                         for event in events for handler in event["handlers"]
                     )
                 finally:
                     # Chiar și un scenariu nereușit poate consuma apeluri și credite LLM.
-                    runs = container.agent_trace.list_runs(feature=FEATURE, limit=1000)
+                    # Un scenariu cu incident rulează și agenții F2: îi numărăm la pași și cost.
+                    runs = container.agent_trace.list_runs(
+                        feature=None if scenario.setup else FEATURE, limit=1000
+                    )
                     known_cost = 0.0
                     for run in runs:
                         detail = container.agent_trace.get_run(run["id"])
@@ -309,6 +479,12 @@ def run_scenario(model: str, scenario: Scenario, *, timeout_s: float = 60) -> Ev
         except Exception as exc:
             result.error = f"{type(exc).__name__}: {exc}"
             result.checks["scenario_completed"] = False
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
     result.elapsed_s = round(time.perf_counter() - started, 4)
     return result
 

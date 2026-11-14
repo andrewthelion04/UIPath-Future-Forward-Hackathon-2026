@@ -21,7 +21,7 @@ def build_router(c: Container) -> APIRouter:
 
     @router.get("/approvals", response_model=list[Approval])
     async def list_approvals(status: str = "pending") -> list[Approval]:
-        """Aprobările în așteptare. `status=all|approved|rejected` pentru istoric."""
+        """Aprobările în așteptare. `status=all|approved|rejected|withdrawn` pentru istoric."""
         return c.approvals.list(status=status)
 
     @router.get("/approvals/{approval_id}", response_model=Approval)

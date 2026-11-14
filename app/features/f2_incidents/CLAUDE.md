@@ -4,9 +4,9 @@
 Primește sesizări despre probleme la o proprietate, de la personal (prin aplicație) sau de la oaspete (prin F3), și deschide un incident. Propune hostului fie remedierea la timp, fie relocarea oaspetelui într-o proprietate liberă compatibilă. După decizia hostului execută acțiunea aleasă și anunță oaspetele.
 
 ## Contract
-- Ascultă: `IssueReported` (sursă `staff` sau `guest`; un singur abonat, `on_issue_reported`), `ApprovalDecided` pentru aprobările proprii (`incident_resolution`, `incident_closure`), evenimentele interne din `events.py`.
+- Ascultă: `IssueReported` (sursă `staff` sau `guest`; un singur abonat, `on_issue_reported`), `ApprovalDecided` pentru aprobările proprii (`incident_resolution`, `incident_closure`), `GuestOfferAnswered` (răspunsul oaspetelui la oferta de relocare, dat în conversație), `GuestMessageReceived` (doar prelungește termenul ofertei), evenimentele interne din `events.py`.
 - Emite: `ApprovalRequested` (prin serviciul de aprobări), `GuestMessageSent` (prin `ChannelGateway`), `IssueReported` (doar din `POST /incidents/report`, aceeași cale ca simulatorul). Private, în `events.py`: `IncidentDecided`, `IncidentResolved` și pașii interni (`StaffContactRequested`, `StaffReplied`, `EstimateReady`, `GuestAnsweredRelocation`, `IncidentTaskCompleted`, `IncidentTimeout`, `Sim*Due`).
-- Date deținute: `f2_incidents`, `f2_incident_reports`, `f2_staff_messages`, `f2_tasks`.
+- Date deținute: `f2_incidents`, `f2_incident_reports`, `f2_staff_messages`, `f2_tasks`. Publică în `guest_topics` (nucleu) starea incidentului pe care oaspetele are voie să o afle.
 - Porturi folosite: `calendar` (disponibilitatea candidaților, blocarea la relocare), `channel` (mesajele către oaspete), `llm` (prin `ctx.agent`).
 - Cereri de aprobare: `incident_resolution` (opțiunile `relocate` = „oferă relocarea”, doar dacă există o proprietate compatibilă liberă, și `remediate`; cea recomandată e prima), `incident_closure` (opțiunea `close`).
 
@@ -16,9 +16,32 @@ Primește sesizări despre probleme la o proprietate, de la personal (prin aplic
 - Endpointuri: `GET /incidents`, `GET /incidents/{id}`, `POST /incidents/report`, `POST /incidents/{id}/staff-reply`, `POST /incidents/{id}/guest-answer`, `POST /incidents/tasks/{id}/complete`.
 - Pagina Streamlit și tab-ul „Incidents” din extensie arată incidentele, estimarea, recomandarea, conversația cu personalul și sarcinile; ambele doar citesc.
 - Termenele (personal, oaspete) stau în baza de date și se verifică la fiecare eveniment F2 și la `GET /incidents`.
-- Testat: 41 de teste F2 (fluxuri cap-coadă, deduplicare inclusiv simultană, timeouturi, intrări manuale, fallback-uri cu LLM căzut, reguli pure, migrarea schemei); suita completă trece neschimbată în afara F2. Verificat și pe API-ul pornit cu întârzieri de simulare (calea în fundal).
+- Testat inițial: 41 de teste F2 (fluxuri cap-coadă, deduplicare inclusiv simultană, timeouturi, intrări manuale, fallback-uri cu LLM căzut, reguli pure, migrarea schemei); suita completă trece neschimbată în afara F2. Verificat și pe API-ul pornit cu întârzieri de simulare (calea în fundal).
+- **După auditul de integrare (14 noiembrie 2026), 54 de teste F2** (`tests/test_integration_guards.py` pentru cele de mai jos):
+  - **ținta relocării** trebuie să fie compatibilă, liberă pe un calendar complet al ei (`covers_free_nights`), fără incident deschis și pe o conexiune care poate bloca disponibilitatea; toate se reverifică la acceptarea oaspetelui, sub lockul comun `ctx.calendar.lock(target)`, deci două relocări nu ajung în aceeași proprietate;
+  - **nimic confirmat pe jumătate:** dacă ținta nu mai e potrivită, blocarea în calendar eșuează sau oferta nu poate fi livrată, oaspetele nu primește nimic în plus, hostul e notificat și F2 cere o propunere nouă (`_propose_again`); o ofertă nelivrată nu mai pornește răspunsul simulat;
+  - **rezervarea trebuie să fie a proprietății raportate:** `POST /incidents/report` (și `/sim/staff-report`) răspund `422`; un `IssueReported` cu o rezervare străină folosește sejurul real al proprietății;
+  - **un raport nou după „reparat”** retrage cererea de închidere (`ctx.approvals.withdraw`), creează o sarcină „Follow-up: reported again after the repair: …” și anunță hostul; aprobarea veche nu mai poate închide incidentul;
+  - **textul către oaspete de la închidere** apare și în rezumatul aprobării, iar ambele inboxuri arată descrierea opțiunii și când e una singură;
+  - **termenele** se restaurează dacă evenimentul de timeout nu a putut fi publicat;
+  - **trierea mock** separă aceeași defecțiune din încăperi diferite (scurgere la chiuveta din bucătărie vs. dușul din baie); promptul de triere spune același lucru modelului real;
+  - pașii simulați aflați în pauză se opresc la shutdown/reset (`ctx.on_quiesce`).
+- **Conversația cu oaspetele (14 noiembrie 2026)**, 66 de teste F2 (`tests/test_guest_conversation.py` pentru cele de mai jos):
+  - `guest_view.py` calculează, pentru fiecare stare, ce are voie să afle oaspetele; `service._sync_guest_topic` îl publică în `ctx.guest_topics` după fiecare scriere a incidentului (hook-ul `repo.on_change`). Înainte de decizia hostului: „echipa evaluează”, fără estimare. `awaiting_guest`: oferta cu detaliile țintei și linkul anunțului. `remediation_scheduled`: estimarea, doar dacă oaspetele a primit-o într-un mesaj aprobat. `relocated`: noua proprietate, valabil până la check-out (rămâne și după închiderea incidentului). `resolved` fără mutare și `dismissed`: subiectul se închide;
+  - răspunsul oaspetelui din chat ajunge ca `GuestOfferAnswered` și trece prin aceeași metodă ca endpointul (`answer_relocation`); un răspuns la o ofertă deja închisă nu schimbă nimic și notifică hostul;
+  - un mesaj al oaspetelui cât timp oferta e deschisă prelungește termenul (nu mai e trecut automat la „rămâne” în timp ce pune întrebări);
+  - oferta de relocare conține linkul anunțului țintei, când există (`Property.listing_url`), în ciorna agentului și în șablon;
+  - mentenanța simulată primește din `simulation.py` faptele și durata („situația”), iar modelul doar le formulează: pe model real, AC ≈ 30 h, scurgere ≈ 2 h, ca în mock;
+  - agentul `closure` nu mai primește starea internă și valorile lipsă;
+  - pagina F2 are două butoane pe incidentele în `awaiting_guest`, pentru când hostul a lămurit direct cu oaspetele.
+- **Verificat pe model real** (`anthropic/claude-sonnet-5.5`, 14 noiembrie 2026): trierea (aceeași scurgere în alte cuvinte se atașează, becul rămâne separat), întrebarea și interpretarea răspunsului mentenanței, ciornele cu link, rezumatul de închidere și mesajul „s-a reparat”. Scenariile sunt în `scripts/eval_models.py`.
 
 ## Decizii
+- Ce află oaspetele se hotărăște în cod (`guest_view.py`), nu în promptul copilotului: în `facts` intră doar ce a aprobat hostul sau ce e pur informativ. Textele evită formulările pe care garda copilotului le tratează drept promisiuni („confirmed”, „you can”).
+- Duratele din simulare vin din cod, nu din model — demo-ul rămâne previzibil și pe model real (AC → relocare recomandată, scurgere → reparație pe loc).
+- O proprietate cu incident deschis nu e oferită ca țintă de relocare — nu mutăm un oaspete într-o proprietate cu o problemă cunoscută (decizia de politică cerută de audit, I11).
+- Fără posibilitatea de a bloca ținta în calendar, relocarea nu se oferă și nu se confirmă — o țintă neblocată poate fi vândută altcuiva după confirmare. Pe OwnerRez (disponibilitate nescriabilă) F2 oferă deci doar remedierea.
+- Un pas aprobat care nu se poate executa duce la o propunere nouă, nu la o stare intermediară — hostul decide din nou, cu faptele actualizate.
 - Un agent per handler, pașii asincroni prin evenimente interne — limita de 180 s a unui handler, corelarea și `?wait=true` funcționează singure.
 - Rezultatele structurate ale agenților se scriu prin unelte cu validare în cod (`record_estimate`, `save_guest_messages`, `save_closure`), nu se parsează din text liber; doar trierea întoarce `attach:<id>` / `new` în `finish`, validat de `parse_triage_result`.
 - Ciornele către oaspete se scriu înainte de decizie și se arată verbatim în opțiunile aprobării; alegerea opțiunii le aprobă pe toate — o singură aprobare per decizie, nimic regenerat după.
@@ -186,20 +209,22 @@ Stabilite înainte de one-shot. Unde contrazic textul de mai sus, au prioritate 
 
 ## Probleme deschise / TODO
 - Relocarea nu mută rezervarea în PMS; hostul trebuie să o mute manual (notificarea îi spune asta).
-- Pe o conexiune PMS reală calendarul nu se poate citi încă (F1), deci relocarea nu va fi oferită.
-- **Răspunsul real al oaspetelui la oferta de relocare.** Un oaspete real răspunde în chat, iar chatul aparține F3. Legarea cere un PR separat: un eveniment comun nou (ex. „oaspetele a răspuns la o ofertă”), emis de F3 când recunoaște răspunsul, ascultat de F2 prin aceeași metodă ca `POST /incidents/{id}/guest-answer`. Până atunci, răspunsul vine din simulare sau din endpoint, iar un răspuns scris în chat e tratat de F3 ca orice mesaj (F2 aplică timeoutul). **La demo: nu răspundeți la ofertă din chatul oaspetelui** din simulator; răspunsul vine din simulare.
+- Pe o conexiune PMS reală relocarea nu e oferită: OwnerRez nu poate bloca disponibilitatea prin API, iar calendarul Hospitable e stub.
+- După relocare, rezervarea din PMS arată tot proprietatea veche până când hostul o mută manual; copilotul răspunde cu noua adresă din subiectul publicat de F2.
+- Copilotul află despre incident doar ce publică `guest_view.py`. Întrebările la care faptele nu răspund (compensații, altă proprietate, ora exactă a tehnicianului) sunt predate hostului; mesajele proactive către oaspete în afara celor aprobate nu există.
+- După ce copilotul predă discuția hostului, incidentul rămâne în `awaiting_guest` până la răspuns (chat, butoanele din pagina F2) sau până la timeout.
 - **WhatsApp pentru personal (după faza 1).** Cere lucru în afara F2, în PR-uri separate: port + adaptor de canal (cel mai simplu, Twilio Sandbox; WhatsApp Business API direct cere verificare Meta și șabloane), webhook de intrare în F1, numărul de telefon în `StaffMember` și un eveniment comun pentru mesajele personalului (doar prin adăugare). În F2 se înlocuiește doar `IncidentService.send_to_staff`, iar răspunsurile intră pe `receive_staff_reply`.
 - **Aplicație dedicată pentru personal**, dacă rămâne timp; endpointurile F2 o pregătesc.
 - **Editarea ciornei de către host** înainte de trimitere cere o schimbare în nucleu (decizie cu text modificat), într-un PR separat, prin adăugare.
 - Extensia nu are câmp de notă la respingere; respingerea închiderii din extensie creează sarcina „Follow-up requested by the host”.
 - Temporizatoarele simulării cu întârziere > 0 sunt sarcini în proces: un restart în timpul pauzei pierde pasul simulat (incidentul ajunge oricum la timeout și apoi la host).
 - Prompturile n-au fost rulate pe un model real (nu avem cheie): de verificat trierea, interpretarea răspunsurilor vagi, ciornele și rezumatul (vezi „De verificat manual”).
-- `docs/ARCHITECTURE.md` §4 listează doar `f2_incidents` ca tabel F2; actualizarea (cele patru tabele) e în afara zonei F2 și rămâne pentru un PR mic de documentație.
 
 ## Note pentru Claude
 - Nu modela tarife pentru personal sau reparații (`CLAUDE.md` §1).
 - Regula de compatibilitate e o funcție pură (`is_compatible`): schimb-o acolo și adaugă cazul în `tests/`. La fel regula „la timp” și regula de recomandare: funcții pure, testate separat.
 - Mesajele către oaspete pleacă cu `sender="host"`, fiindcă urmează unei decizii a hostului.
-- F3 nu e cunoscut de acest feature: sesizările oaspeților ajung aici doar ca `IssueReported`.
+- F3 nu e cunoscut de acest feature: sesizările oaspeților ajung aici ca `IssueReported`, răspunsul la ofertă ca `GuestOfferAnswered`, iar ce află oaspetele pleacă prin `ctx.guest_topics`.
+- Când adaugi o stare sau un câmp vizibil oaspetelui, actualizează `guest_view.py` și testele lui; nu pune acolo nimic neaprobat de host.
 - Când adaugi o unealtă sau schimbi fluxul unui agent F2, actualizează și `mock_llm.py`.
 - Simularea nu are voie să ocolească fluxul real: personalul și oaspetele simulați apelează aceleași metode ale serviciului ca endpointurile.

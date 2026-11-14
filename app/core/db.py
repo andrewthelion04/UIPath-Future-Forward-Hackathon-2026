@@ -75,6 +75,19 @@ class Database:
             finally:
                 self._tx_depth = 0
 
+    def ensure_column(self, table: str, column: str, definition: str) -> bool:
+        """Adaugă o coloană lipsă pe o bază existentă (`CREATE TABLE IF NOT EXISTS` nu o face).
+
+        Doar pentru adăugări: coloana trebuie să fie opțională sau să aibă o valoare implicită.
+        Întoarce True dacă a adăugat-o.
+        """
+        with self._lock:
+            existing = {row["name"] for row in self._conn.execute(f'PRAGMA table_info("{table}")')}
+            if not existing or column in existing:
+                return False  # tabelul nu există încă (îl creează schema) sau coloana e deja acolo
+            self._conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {definition}')
+            return True
+
     def table_names(self) -> list[str]:
         rows = self.query(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"

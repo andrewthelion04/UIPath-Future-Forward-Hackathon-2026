@@ -1,14 +1,16 @@
 """Pagina F2: incidentele, conversația agentului cu personalul, sarcinile. Consumă doar API-ul REST.
 
-Pagina doar citește: deciziile hostului se iau din inboxul de aprobări, iar personalul și
-oaspetele sunt simulați automat (setările `F2_SIM_*`).
+Deciziile hostului se iau din inboxul de aprobări, iar personalul e simulat (setările
+`F2_SIM_*`). Singura acțiune de aici: când copilotul a predat hostului discuția despre o ofertă
+de relocare, hostul notează ce a hotărât oaspetele, ca incidentul să meargă mai departe.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from ui.components import load, multiline, property_names, short_time, status_badge
+from ui import api_client as api
+from ui.components import act, flash, load, multiline, property_names, short_time, show_flash, status_badge
 
 STATUS_HELP = {
     "awaiting_staff": "The agent asked maintenance how long the fix takes.",
@@ -28,6 +30,16 @@ st.caption(
     "guest messages. Nothing reaches the guest before the host approves. Staff and guest answers "
     "are simulated in the demo."
 )
+
+show_flash()
+
+
+def record_answer(incident: dict, choice: str) -> None:
+    result = act(api.post, f"/incidents/{incident['id']}/guest-answer", {"choice": choice}, wait=True)
+    if result is not None:
+        flash("Recorded: the guest " + ("accepted the move." if choice == "accept" else "stays."))
+        st.rerun()
+
 
 incidents = load("/incidents")
 names = property_names(load("/properties"))
@@ -67,6 +79,17 @@ for incident in incidents:
             facts.append(f"Resolution: {incident['resolution']}")
         if facts:
             st.markdown(multiline("\n".join(facts)))
+
+        if incident["status"] == "awaiting_guest":
+            st.caption(
+                "The guest answers in the chat and the copilot passes the answer on. If you "
+                "settled it with the guest directly, record their answer here."
+            )
+            accept_column, stay_column, _ = st.columns([2, 2, 5])
+            if accept_column.button("Guest accepted the move", key=f"accept_{incident['id']}", width="stretch"):
+                record_answer(incident, "accept")
+            if stay_column.button("Guest stays", key=f"stay_{incident['id']}", width="stretch"):
+                record_answer(incident, "stay")
 
         if incident.get("reports") and len(incident["reports"]) > 1:
             with st.expander(f"Reports ({len(incident['reports'])})"):

@@ -151,7 +151,11 @@ class OwnerRezAdapter:
                 break
             body = await self._request("GET", url, params=query)
             page = body.get("items") if isinstance(body, dict) else body
-            items.extend(item for item in page or [] if isinstance(item, dict))
+            if not isinstance(page, list):
+                # Un răspuns 200 fără listă nu înseamnă „nimic”: ar arăta nopți libere sau
+                # rezervări dispărute. Îl tratăm ca eroare a PMS-ului.
+                raise PmsError(f"OwnerRez GET {path} returned no item list")
+            items.extend(item for item in page if isinstance(item, dict))
             # `next_page_url` conține deja toți parametrii paginii următoare.
             url = body.get("next_page_url") if isinstance(body, dict) else None
             query = None

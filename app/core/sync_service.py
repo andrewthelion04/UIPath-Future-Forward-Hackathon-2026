@@ -71,6 +71,7 @@ class SyncService:
                     base_price=item.base_price,
                     currency=item.currency,
                     pms_provider=pms_provider,
+                    listing_url=item.listing_url,
                 )
             )
             if created:

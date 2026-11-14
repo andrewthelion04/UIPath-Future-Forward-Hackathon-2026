@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
+from typing import Any
 
 from app.core.contracts.models import Property
 from app.features.f2_incidents.models import OPTION_RELOCATE, OPTION_REMEDIATE
@@ -29,6 +30,17 @@ def is_compatible(candidate: Property, original: Property, guest_count: int) -> 
         and candidate.max_guests >= guest_count
         and candidate.bedrooms >= original.bedrooms
     )
+
+
+def covers_free_nights(days: list[Any], property_id: str, start: date, end: date) -> bool:
+    """Calendarul acoperă exact nopțile cerute ale proprietății și toate sunt libere.
+
+    Un răspuns incomplet, cu dubluri sau despre altă proprietate nu dovedește că e liber.
+    """
+    expected = [start + timedelta(days=offset) for offset in range((end - start).days)]
+    if not expected or sorted(day.day for day in days) != expected:
+        return False
+    return all(day.property_id == property_id and day.available for day in days)
 
 
 def parse_clock(value: str, default: time = time(15, 0)) -> time:

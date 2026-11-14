@@ -1,5 +1,56 @@
 # Demo StayPilot AI — cele cinci fluxuri
 
+## Demo-ul de prezentare: agentul pe model real (aproximativ 8 minute)
+
+Acesta e scenariul recomandat pentru prezentare. Agenții rulează pe modelul real
+(OpenRouter), iar PMS-ul, recenziile și piața rămân simulate, deci nimic nu ajunge la
+oaspeți reali. Întregul scenariu costă aproximativ **0,35 USD** de credit și a fost rulat
+cap-coadă pe API-ul pornit efectiv (14 noiembrie 2026, `anthropic/claude-sonnet-5.5`).
+Secțiunile numerotate de mai jos descriu aceleași fluxuri în detaliu, pe mock.
+
+**Pregătire.** În `.env`:
+
+```
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=<cheia ta>
+LLM_MODEL=anthropic/claude-sonnet-5.5
+FIXED_TODAY=2026-06-01
+F2_SIM_GUEST_ANSWER=off      # oaspetele răspunde din chat, nu simulat
+F2_SIM_STAFF_DELAY_S=2
+F2_SIM_TASK_DELAY_S=2
+```
+
+Pornește `python manage.py api` și, în alt terminal, `python manage.py ui`. Înainte de
+prezentare apasă **Simulator → Reset world**. Ține deschise două file: **Simulator** și
+**Approvals** (sau extensia Chrome pentru aprobări). Un răspuns al agentului durează
+5–15 secunde; un incident ajunge la decizia hostului în aproximativ 20 de secunde.
+
+| # | Ce faci | Ce arăți |
+|---|---|---|
+| 1 | **Guest chat → Emma Johnson**: `Hi! What time is check-in, and is there wifi?` | Răspuns din datele rezervării (ora, lockbox, wifi), fără aprobare. Agentul spune singur ce nu știe (parola). |
+| 2 | Emma: `Could we check in early, around noon?` Apoi **Approvals → Approve**. | Agentul nu promite nimic: cere aprobarea, cu noaptea dinainte verificată în calendar. După aprobare pleacă textul exact pe care l-a văzut hostul. |
+| 3 | **Staff report**: Maria Ionescu, **Calea Victoriei Apartment**, `The air conditioning is not working`. | În **F2 · Incidents**: agentul întreabă mentenanța, primește „about 30 hours” și propune relocarea. |
+| 4 | **Approvals → Incident at Calea Victoriei Apartment**: citește recomandarea și textele, alege **Offer relocation to Herastrau Family Flat**, **Approve**. | Recomandarea e calculată în cod (30 h față de 3 h tolerabile). Hostul aprobă textele exacte, inclusiv linkul anunțului. |
+| 5 | **Guest chat → Lukas Mueller**: `Do you have photos of the other apartment? And does it have parking?` | Agentul răspunde din detaliile ofertei, trimite linkul, spune ce nu știe despre parcare. Nu decide nimic: incidentul rămâne `awaiting_guest`. |
+| 6 | Lukas: `Honestly, I'd rather get a refund for tonight.` (opțional) | Fără promisiuni: îi spune că îl contactează gazda și notifică hostul cu ce vrea oaspetele. |
+| 7 | Lukas: `Ok, sounds good, let's move there.` | Confirmare de primire de la copilot, apoi confirmarea mutării cu textul aprobat de host. Incidentul devine `relocated`; calendarul țintei e blocat. |
+| 8 | **Approvals → Close the incident…**, **Close the incident**. Apoi Lukas: `What's the address of the new place again?` | Rezumatul de închidere scris de agent. După mutare, agentul răspunde cu noua adresă. |
+| 9 | **Review analysis → Old Town Studio → Analyse reviews**, apoi **F4**. | Recomandări prioritizate, fiecare cu citate verificate în cod. |
+| 10 | **Cancel booking → Emma Johnson**, apoi **Approvals → Relist at 65.96–75.85 EUR/night**. | Preț calculat în cod din comparabile, cu limita hostului; fără LLM. |
+| 11 | **Agent dashboard**. | Indicatorii (răspunsuri autonome față de mesaje aprobate, intervenții ale regulilor din cod, timp median de răspuns, cost). La **Flow story** alege incidentul: fiecare pas cu motivul lui, ce a văzut și ce a ales hostul, legătura cu mesajul din chat care a acceptat oferta. **Decision log** arată deciziile din toate fluxurile; filtrează pe **Code rule** pentru corecțiile făcute de cod. |
+
+**De reținut pentru prezentare:**
+
+- Pasul 2 trebuie făcut înaintea pasului 10: anularea Emmei îi închide conversația.
+- Mentenanța e simulată: duratele vin din scenariul simulării (AC ≈ 30 h, scurgere ≈ 2 h,
+  bec ≈ 30 min), iar modelul doar le formulează. Pentru ramura „reparăm pe loc”, raportează
+  `Water is leaking under the kitchen sink.`: recomandarea devine **Fix it in place**.
+- Răspunsurile modelului diferă ușor de la o rulare la alta; efectele (aprobări, stări,
+  mesaje aprobate) sunt aceleași. `python scripts/eval_models.py --models
+  anthropic/claude-sonnet-5.5` rulează 14 scenarii și le verifică după efecte.
+- **Rezervă fără rețea:** `LLM_PROVIDER=mock` și repornește API-ul. Aceiași pași merg pe
+  politica deterministă, cu aceleași fraze ale oaspetelui.
+
 ## Pregătire reproductibilă
 
 Din rădăcina proiectului, instalează dependențele cu `python manage.py setup` dacă
@@ -29,7 +80,7 @@ la `http://127.0.0.1:8000`, cu documentație la `/docs`. Pentru porturi alternat
 `python manage.py ui --server.port 8515`. Aceste porturi au fost folosite la verificare.
 
 În **Simulator → Reset world → Reset world**, resetează exclusiv lumea de demo.
-În **World data**, verifică patru proprietăți, șapte rezervări și data simulată
+În **World data**, verifică șase proprietăți (toate în București), șapte rezervări și data simulată
 1 iunie 2026. Păstrează ordinea de mai jos; Emma trebuie să rămână activă până la F5.
 Setările F2 de mai sus fac personalul, răspunsul oaspetelui și reparația simulate
 imediat: după fiecare acțiune rămâne de luat doar următoarea decizie a hostului.
@@ -80,10 +131,12 @@ starea PMS-ului; rezervarea trebuie anulată mai întâi în PMS. Mock ignoră �
    Citește textele exacte **Guest will receive**, **If the guest accepts** și
    **If the guest stays**: acestea sunt mesajele pe care le autorizează hostul.
 4. Selectează **Offer relocation to Herastrau Family Flat** și apasă **Approve**.
-   Se trimite întâi oferta, apoi se așteaptă răspunsul oaspetelui (`awaiting_guest`).
-   Cu setările de mai sus răspunsul este automat `accept`; nu răspunde în **Guest chat**,
-   deoarece acel chat este procesat de F3. În conversația lui Lukas apar oferta și
-   confirmarea exactă din aprobare.
+   Se trimite întâi oferta (cu linkul anunțului), apoi se așteaptă răspunsul oaspetelui
+   (`awaiting_guest`). Cu setările de mai sus răspunsul este automat `accept`. Cu
+   `F2_SIM_GUEST_ANSWER=off`, răspunsul vine din **Guest chat → Lukas Mueller**: copilotul
+   răspunde la întrebări despre proprietatea oferită și, la un „da” sau „nu” clar,
+   transmite răspunsul către F2. În conversația lui Lukas apar oferta și confirmarea
+   exactă din aprobare.
 5. În F2, incidentul devine `relocated`, cu **Guest accepted the move**. În **Tasks**,
    sarcina de reparație pentru Andrei este creată și, pe simularea fără întârzieri,
    apare deja terminată, cu nota de finalizare. În **World data → Calendar**, alege
@@ -128,12 +181,12 @@ păstrezi scenariul F5 de mai jos neschimbat.
 ## 4. F4 — analiza recenziilor
 
 1. În **Simulator → Review analysis**, păstrează **All properties** și apasă **Analyse reviews**.
-2. În **F4 · Review analysis**, apar analizele celor patru proprietăți. Cardurile
+2. În **F4 · Review analysis**, apar analizele celor șase proprietăți. Cardurile
    prezintă recomandări structurate cu temă, prioritate **HIGH/MEDIUM/LOW**, acțiune și
    citate verificabile din recenzii. Sunt sortate după prioritate. Pentru **Old Town Studio**,
    arată **5 reviews**, media **3.8** și temele **Wi-Fi**, **Check-in**, **Noise**.
 3. Prima analiză afișează **First analysis for this property.** În
-   **Saved review snapshots (4)** se văd sursele, datele și numărul de recenzii.
+   **Saved review snapshots (6)** se văd sursele, datele și numărul de recenzii.
    În **Notifications**, arată recomandările hostului; în **Agent timeline**, uneltele
    `get_rating_stats`, `get_reviews`, `add_recommendation` și `finish`.
    Nu se cere aprobare: sunt recomandări informative.

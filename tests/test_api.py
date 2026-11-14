@@ -36,7 +36,7 @@ def test_common_endpoints_exist(client):
 def test_world_endpoints_use_internal_ids_only(client):
     properties = client.get("/properties").json()
     bookings = client.get("/bookings").json()
-    assert len(properties) == 4 and len(bookings) == 7
+    assert len(properties) == 6 and len(bookings) == 7
     assert all(p["id"].startswith("prop_") for p in properties)
     assert all(b["id"].startswith("bk_") and b["property_id"].startswith("prop_") for b in bookings)
     assert "MOCK-" not in client.get("/properties").text + client.get("/bookings").text
@@ -79,7 +79,7 @@ def test_sync_endpoint_is_repeatable(client):
     second = client.post("/integrations/mock/sync").json()
     assert first == second
     assert (first["properties_created"], first["bookings_created"]) == (0, 0)
-    assert len(client.get("/properties").json()) == 4
+    assert len(client.get("/properties").json()) == 6
 
 
 def test_manual_mapping_for_debugging(client):
@@ -120,7 +120,7 @@ def test_reset_clears_everything_and_reseeds(client):
 
     reset = client.post("/sim/reset").json()
 
-    assert reset["status"] == "reset" and reset["properties"] == 4
+    assert reset["status"] == "reset" and reset["properties"] == 6
     assert client.get("/events").json() == []
     assert client.get("/agent/runs").json() == []
     assert client.get("/f1/webhook-log").json() == []

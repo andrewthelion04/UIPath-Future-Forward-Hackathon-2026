@@ -6,14 +6,16 @@ Pornire:  python manage.py api      (sau: python -m app.main --port 8000)
 from __future__ import annotations
 
 import argparse
+import hmac
 import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 
 from app.config import ROOT_DIR, ConfigError, Settings, load_settings
 from app.container import Container
@@ -31,6 +33,17 @@ def _configure_logging() -> None:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         logger.propagate = False
+
+
+def requires_api_token(method: str, path: str) -> bool:
+    """Ce cere tokenul: tot, în afară de preflight-ul CORS, `/health` și webhook-uri.
+
+    `/health` rămâne deschis ca UI-urile să poată spune „API-ul rulează, dar tokenul lipsește”;
+    webhook-urile vin de la PMS, care nu poate trimite antetul nostru și are propriile verificări.
+    """
+    if method == "OPTIONS" or path == "/health":
+        return False
+    return not (path == "/webhooks" or path.startswith("/webhooks/"))
 
 
 def create_app(
@@ -51,6 +64,23 @@ def create_app(
 
     app = FastAPI(title="StayPilot AI", version="0.1.0", lifespan=lifespan)
     app.state.container = container
+
+    if settings.api_token is not None:
+        expected = f"Bearer {settings.api_token.get_secret_value()}".encode()
+
+        @app.middleware("http")
+        async def require_api_token(request: Request, call_next: Any) -> Response:
+            if requires_api_token(request.method, request.url.path):
+                given = request.headers.get("authorization", "").encode()
+                if not hmac.compare_digest(given, expected):
+                    return JSONResponse(
+                        {"detail": "missing or invalid API token"},
+                        status_code=401,
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+            return await call_next(request)
+
+    # CORS se adaugă ultimul, deci e stratul exterior: și un 401 ajunge cu antetele CORS.
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=ALLOWED_ORIGINS,

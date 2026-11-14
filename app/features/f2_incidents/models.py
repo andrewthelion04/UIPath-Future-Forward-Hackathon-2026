@@ -68,6 +68,7 @@ class Incident(BaseModel):
     closure_round: int = 0
     closure_approval_id: str | None = None
     closure_message: str | None = None
+    guest_note: str | None = None
 
     @property
     def is_open(self) -> bool:

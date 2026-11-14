@@ -36,6 +36,29 @@ def build_router(c: Container) -> APIRouter:
         """Evenimentele publicate, cu handlerii care le-au procesat și starea fiecăruia."""
         return c.bus.list_events(limit=limit, correlation_id=correlation_id)
 
+    @router.get("/agent/overview")
+    async def agent_overview() -> dict[str, Any]:
+        """Indicatorii dashboardului: cât a lucrat agentul singur, cât a cerut hostului, cât a costat."""
+        return c.flows.overview()
+
+    @router.get("/agent/flows")
+    async def list_flows(limit: int = 50) -> list[dict[str, Any]]:
+        """Fluxurile (un declanșator și tot ce a urmat), cele mai recente primele."""
+        return c.flows.list_flows(limit=limit)
+
+    @router.get("/agent/flows/{correlation_id}")
+    async def get_flow(correlation_id: str) -> dict[str, Any]:
+        """Povestea unui flux: evenimente, pașii agentului cu motivul lor, aprobări, mesaje."""
+        story = c.flows.story(correlation_id)
+        if story is None:
+            raise HTTPException(404, f"unknown flow {correlation_id}")
+        return story
+
+    @router.get("/agent/decisions")
+    async def list_decisions(limit: int = 40) -> list[dict[str, Any]]:
+        """Jurnalul deciziilor din toate fluxurile: agent (cu motiv), cod, host."""
+        return c.flows.decisions(limit=limit)
+
     @router.get("/agent/runs")
     async def list_agent_runs(
         limit: int = 50, feature: str | None = None, booking_id: str | None = None

@@ -35,6 +35,7 @@ class SeedProperty(BaseModel):
     amenities: list[str] = Field(default_factory=list)
     base_price: float = Field(gt=0)
     currency: str = "EUR"
+    listing_url: str | None = None
 
 
 class SeedReservation(BaseModel):

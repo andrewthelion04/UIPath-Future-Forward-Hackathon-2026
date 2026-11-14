@@ -275,7 +275,10 @@ class Relisting:
         if proposal is None:
             return
         async with self._locks.setdefault(proposal.property_id, asyncio.Lock()):
-            await self._apply_decision(event)
+            # Lockul comun al calendarului: verificarea și scrierea prețurilor nu se
+            # intercalează cu alt feature care scrie aceleași nopți (ex. o relocare F2).
+            async with self._ctx.calendar.lock(proposal.property_id):
+                await self._apply_decision(event)
 
     async def _apply_decision(self, event: ApprovalDecided) -> None:
         ctx = self._ctx
@@ -299,6 +302,22 @@ class Relisting:
 
         if not proposal.nightly_prices or proposal.expires_at is None:
             self._stop(proposal, "failed", "This older proposal has no nightly snapshot. Relist manually.")
+            return
+        # Limita de bani a hostului se aplică la momentul scrierii, nu doar la propunere.
+        limit = ctx.world.host_rules().max_relist_discount_pct
+        try:
+            below = [
+                night for night in proposal.nightly_prices
+                if night.proposed_price < floor_price(night.original_price, limit)
+            ]
+        except ValueError as exc:
+            self._stop(proposal, "failed", f"Pricing rules are invalid: {exc}. No changes were made.")
+            return
+        if below:
+            self._stop(proposal, "conflict", (
+                f"Your maximum relisting discount is now {limit:g}%, and "
+                f"{len(below)} proposed night(s) go below it. No changes were made."
+            ))
             return
         try:
             days = await self._read_calendar(proposal)
@@ -327,6 +346,15 @@ class Relisting:
                     ), timeout=self._settings.calendar_timeout_s,
                 )
                 applied.append(str(night.day))
+        except asyncio.CancelledError:
+            # Handlerul a fost oprit (timeoutul event bus-ului sau shutdown) la jumătate:
+            # aprobarea e deja consumată, deci consemnăm starea și progresul înainte să ieșim.
+            self._stop(proposal, "failed", (
+                "The price update was interrupted before it finished. "
+                f"Confirmed updated nights: {', '.join(applied) or 'none'}. "
+                "The interrupted call may have completed remotely; verify all nights in your PMS."
+            ))
+            raise
         except Exception as exc:
             # Portul nu oferă tranzacții; un rollback ar putea suprascrie o rezervare nouă.
             self._stop(proposal, "failed", (
@@ -391,6 +419,15 @@ class Relisting:
         if proposal.status != "awaiting_approval":
             return proposal.status == "expired"
         deadline = proposal.expires_at or datetime.combine(proposal.start_date, time.min, self._timezone)
+        try:  # ora de check-in mutată mai devreme după propunere scurtează termenul
+            current = datetime.combine(
+                deadline.astimezone(self._timezone).date(),
+                time.fromisoformat(self._ctx.world.host_rules().check_in_time),
+                self._timezone,
+            )
+            deadline = min(deadline, current)
+        except ValueError:
+            pass  # oră invalidă în reguli: rămâne termenul salvat
         if self._now() < deadline:
             return False
         changed = self._ctx.db.execute(
@@ -399,6 +436,8 @@ class Relisting:
             ("Check-in reached; approval can no longer change the calendar.", utcnow().isoformat(), proposal.id),
         )
         if changed.rowcount:
+            if proposal.approval_id:  # nu lăsăm în inbox o aprobare care nu mai poate face nimic
+                self._ctx.approvals.withdraw(proposal.approval_id, reason="Check-in reached.")
             self._notify_expired(proposal)
         return True
 

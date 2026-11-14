@@ -13,8 +13,9 @@ from typing import Any, Literal
 from pydantic import Field
 
 from app.core.agent.tools import RunContext, Tool, ToolArgs
-from app.core.contracts.events import IssueReported
-from app.core.contracts.models import ApprovalOption
+from app.core.channel_gateway import ChannelError
+from app.core.contracts.events import GuestOfferAnswered, IssueReported
+from app.core.contracts.models import ApprovalOption, GuestTopic
 from app.core.feature_context import FeatureContext
 from app.features.f3_guest_copilot.requests import (
     APPROVAL_KIND,
@@ -52,6 +53,7 @@ class SendGuestReplyArgs(ToolArgs):
     approval_id: str | None = Field(default=None, description="Required for a confirmation; must match an approved F3 request.")
     request: GuestRequest | None = Field(default=None, description="The exact request authorized by approval_id.")
     host_follow_up: bool = Field(default=False, description="Notify the host when facts are missing or manual follow-up is needed.")
+    follow_up_note: str | None = Field(default=None, max_length=400, description="With host_follow_up: one sentence telling the host what the guest wants or what is missing.")
 
 
 class RequestHostApprovalArgs(ToolArgs):
@@ -60,9 +62,41 @@ class RequestHostApprovalArgs(ToolArgs):
     proposed_reply: str | None = Field(default=None, max_length=1500, description="The server generates the actual confirmation from validated parameters.")
 
 
+class AnswerOfferArgs(ToolArgs):
+    topic_id: str = Field(description="`topic_id` of the open topic whose pending offer the guest answered.")
+    choice: Literal["accept", "decline"] = Field(
+        description="accept = the guest clearly agrees to the offer; decline = the guest clearly "
+        "prefers not to. A question or a maybe is neither: answer it instead."
+    )
+
+
 class ReportIssueArgs(ToolArgs):
     description: str = Field(min_length=5, description="The problem, in the guest's own terms.")
     severity: Literal["low", "medium", "high"] = "medium"
+
+
+def topic_payload(topic: GuestTopic) -> dict[str, Any]:
+    """Un subiect deschis, în forma scurtă pe care o primește agentul."""
+    payload: dict[str, Any] = {"topic_id": topic.id, "title": topic.title, "facts": topic.facts}
+    if topic.offer is not None:
+        payload["offer"] = {
+            "status": topic.offer.status,  # doar `pending` poate primi un răspuns
+            "question": topic.offer.question,
+            "details": topic.offer.details,
+            "expires_at": topic.offer.expires_at.isoformat(timespec="minutes") if topic.offer.expires_at else None,
+        }
+    return payload
+
+
+def offer_acknowledgement(guest_name: str, choice: str) -> str:
+    """Confirmarea de primire, scrisă în cod: nu afirmă rezultatul, doar că răspunsul a ajuns."""
+    first = guest_name.split()[0] if guest_name.split() else "there"
+    if choice == "accept":
+        return (
+            f"Thank you, {first}! I have passed your answer on to the host's team. "
+            "You will receive the details in a separate message shortly."
+        )
+    return f"Understood, {first}. I have let the host's team know that you prefer to stay."
 
 
 def standard_time_claim(clause: str, check_in: str, check_out: str) -> bool:
@@ -80,6 +114,41 @@ def standard_time_claim(clause: str, check_in: str, check_out: str) -> bool:
     return bool(all_times) and assigned == len(all_times)
 
 
+# Garda pe text liber. O promisiune = o formulare care acordă sau confirmă ceva, în aceeași
+# propoziție cu subiectul unei excepții (oră, animale, persoane în plus, bani, fumat, petreceri)
+# sau, pentru formulările ferme, cu mutarea oaspetelui. Restul e informație și trece.
+STRONG_COMMITMENT = re.compile(
+    r"\b(approved|confirmed|guarantee(?:d|s)?|promis(?:e|ed|es)|permission|granted|go ahead|"
+    r"(?:is|are) reserved|all set|(?:is|has been) arranged|aprobat[ăa]?|confirmat[ăa]?|garantat[ăa]?)\b"
+)
+SOFT_COMMITMENT = re.compile(
+    r"\b(you can|you may|feel free|we can accommodate|no problem|of course|allow(?:s|ed)?|"
+    r"permits?|permitted|welcome|works|(?:is|are|that's) fine|"
+    r"(?:can|may|could) (?:\w+ ){0,2}?(?:arrive|check|bring|stay|join|come|leave|keep|smoke|have)|"
+    r"puteti|puteți|poti|poți|este permis)\b"
+)
+EXCEPTION_TOPIC = re.compile(
+    r"early|earlier|\blate\b|later|check[ -]?in|check[ -]?out|arriv|depart|\bleav|"
+    r"\bpets?\b|\bdogs?\b|\bcats?\b|animal|pupp|kitten|"
+    r"extra (?:guests?|persons?|people)|additional (?:guests?|persons?|people)|more (?:guests|people)|"
+    r"another (?:guest|person)|visitors?|\bfriends?\b|"
+    r"refund|discount|compensat|reimburs|upgrade|free of charge|for free|free night|complimentary|waiv|"
+    r"smok|part(?:y|ies)\b|extend|extra night|stay longer|"
+    r"devreme|t[âa]rziu|c[âa]ine|pisic|reducere|ramburs"
+)
+RELOCATION_TOPIC = re.compile(r"\bmove\b|\bmoved\b|\bmoving\b|relocat|transfer")
+_NEGATION = re.compile(r"(?:\bnot|\bnever|n't|\bno longer)(?:\s+(?:yet|been|be|currently))*\s*$")
+
+
+def _affirms(pattern: re.Pattern[str], clause: str) -> bool:
+    """Există o formulare permisivă care nu e negată („has not yet been confirmed” nu promite)."""
+    return any(
+        " not " not in f" {match.group()} "
+        and not _NEGATION.search(clause[max(0, match.start() - 24):match.start()])
+        for match in pattern.finditer(clause)
+    )
+
+
 def guard_informational_reply(ctx: FeatureContext, booking_id: str, text: str) -> None:
     """Filtru suplimentar pentru text liber; autorizarea strictă folosește cereri tipizate."""
     lowered = text.lower()
@@ -90,21 +159,18 @@ def guard_informational_reply(ctx: FeatureContext, booking_id: str, text: str) -
     if re.search(r"public parking|parking (?:is )?(?:available )?nearby|parking spot is included", lowered):
         if not any(term in notes for term in ("public parking", "parking nearby", "parking is included")):
             raise ValueError("parking location, inclusion and fees must come from explicit host data")
-    affirmative_pattern = re.compile(
-        r"\b(approved|confirmed|guarantee(?:d)?|promis(?:e|ed)|permission|go ahead|you can|you may|feel free|"
-        r"we can accommodate|no problem|of course|allow|allowed|permits?|welcome|is reserved|"
-        r"all set|works|is fine|(?:can|may) (?:arrive|check|bring|stay)|"
-        r"aprobat|confirmat|garantat|puteti|puteți|poti|poți|este permis)\b",
-    )
     booking = ctx.world.get_booking(booking_id)
     first = booking.guest_name.split()[0].lower() if booking and booking.guest_name.split() else "there"
     # Negația sau așteptarea dintr-o propoziție nu autorizează promisiunea din alta.
     clauses = re.split(r"[.!?;\n]|\b(?:but|however|dar)\b", lowered)
     for clause in clauses:
-        affirmative = any(
-            not re.search(r"(?:not|not yet|not been|not yet been)\s*$", clause[max(0, match.start() - 24):match.start()])
-            for match in affirmative_pattern.finditer(clause)
-        )
+        # O formulare permisivă contează doar lângă subiectul unei excepții: „you can see the
+        # photos here” e informație, „you can arrive early” e o promisiune.
+        exception_topic = EXCEPTION_TOPIC.search(clause) is not None
+        relocation_topic = RELOCATION_TOPIC.search(clause) is not None
+        affirmative = (
+            (exception_topic or relocation_topic) and _affirms(STRONG_COMMITMENT, clause)
+        ) or (exception_topic and _affirms(SOFT_COMMITMENT, clause))
         negated = re.search(r"not (?:yet )?(?:approved|confirmed|guaranteed)|cannot accommodate|can't confirm|not allowed", clause)
         pending = re.search(r"host (?:will|needs to|must) confirm|awaiting (?:the )?host|passed your request|pending", clause)
         fact = clause.strip().removeprefix(f"hi {first}, ")
@@ -118,7 +184,11 @@ def guard_informational_reply(ctx: FeatureContext, booking_id: str, text: str) -
             and standard_time_claim(clause, rules.check_in_time, rules.check_out_time)
         )
         if affirmative and not pets_fact and not standard_time_fact:
-            raise ValueError("a commitment requires the exact approved request and its reviewed reply")
+            raise ValueError(
+                "a commitment requires the exact approved request and its reviewed reply; "
+                "state the facts or say the host will follow up, without wording that grants "
+                "or confirms it"
+            )
         if not pending and not negated and re.search(r"early|late|check[ -]?in|check[ -]?out|arriv|devreme|târziu|tarziu", clause):
             times = re.findall(r"\b\d{1,2}:\d{2}\b", clause)
             times += ["12:00"] if "noon" in clause else []
@@ -145,13 +215,17 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
                 "source_channel": booking.source_channel.value,
             },
             "property": (
-                prop.model_dump(include={"name", "address", "city", "bedrooms", "max_guests", "amenities"})
+                prop.model_dump(
+                    include={"name", "address", "city", "bedrooms", "max_guests", "amenities", "listing_url"}
+                )
                 if prop
                 else None
             ),
             "host_rules": ctx.world.host_rules().model_dump(),
             "pending_approvals": [item for item in requests if item["status"] == "pending"],
             "guest_requests": requests,
+            # Ce se întâmplă acum cu sejurul, publicat de feature-ul care se ocupă (ex. un incident).
+            "open_topics": [topic_payload(topic) for topic in ctx.guest_topics.for_booking(booking.id)],
         }
 
     async def check_calendar(args: CheckCalendarArgs, run: RunContext) -> list[dict[str, Any]]:
@@ -212,9 +286,11 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
         )
         run.state["replies_sent"] = run.state.get("replies_sent", 0) + 1
         if args.host_follow_up:
+            note = (args.follow_up_note or "").strip()
             ctx.notify(
                 "Guest request needs manual follow-up",
-                "Some requested facts or permissions are unavailable. Please review the conversation.",
+                "Some requested facts or permissions are unavailable. Please review the conversation."
+                + (f"\n\nWhat the guest needs: {note}" if note else ""),
                 level="warning", booking_id=run.state["booking_id"], property_id=run.state["property_id"],
             )
         return {"sent": True, "message_id": message.id}
@@ -265,6 +341,47 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
                 if approval.status == "approved" else
                 "This exact request was rejected. Communicate the recorded refusal without requesting it again."
             ),
+        }
+
+    async def answer_offer(args: AnswerOfferArgs, run: RunContext) -> dict[str, Any]:
+        # Agentul nu execută și nu confirmă oferta: doar transmite răspunsul oaspetelui către
+        # feature-ul care a făcut-o. Rezultatul îl comunică acela, cu textul aprobat de host.
+        booking = ctx.world.get_booking(run.state["booking_id"])
+        if booking is None:
+            raise LookupError("booking not found")
+        topic = ctx.guest_topics.get(args.topic_id)
+        if topic is None or topic.booking_id != booking.id or topic.status != "open":
+            raise LookupError("no open topic with this topic_id on this booking; read open_topics again")
+        if topic.offer is None or topic.offer.status != "pending":
+            raise ValueError("this topic has no offer waiting for an answer")
+        if not ctx.guest_topics.answer_offer(topic.id, args.choice):
+            raise ValueError("the offer was answered or withdrawn in the meantime")
+        acknowledged = True
+        try:  # confirmarea de primire pleacă înaintea evenimentului: ordinea mesajelor rămâne firească
+            await ctx.channel.send_to_guest(
+                booking.id, offer_acknowledgement(booking.guest_name, args.choice),
+                sender="copilot", feature=ctx.feature,
+            )
+            run.state["replies_sent"] = run.state.get("replies_sent", 0) + 1
+        except ChannelError:
+            acknowledged = False  # ChannelGateway a notificat hostul; răspunsul rămâne valabil
+        await ctx.bus.publish(
+            GuestOfferAnswered(
+                topic_id=topic.id,
+                booking_id=booking.id,
+                feature=topic.feature,
+                choice=args.choice,
+                source=f"feature:{ctx.feature}",
+            )
+        )
+        run.state["offer_answered"] = True
+        return {
+            "recorded": True,
+            "choice": args.choice,
+            "acknowledgement_sent": acknowledged,
+            "note": "The guest already received an acknowledgement. The outcome is sent to the guest "
+            "separately by the host's team: do not state or confirm it yourself. Call finish unless "
+            "the guest also asked something else.",
         }
 
     async def report_issue(args: ReportIssueArgs, run: RunContext) -> dict[str, Any]:
@@ -320,8 +437,16 @@ def build_tools(ctx: FeatureContext) -> list[Tool]:
             request_host_approval,
         ),
         Tool(
+            "answer_offer",
+            "Record the guest's clear answer (accept or decline) to a pending offer listed in "
+            "open_topics. Sends the guest an acknowledgement; the outcome is confirmed separately.",
+            AnswerOfferArgs,
+            answer_offer,
+        ),
+        Tool(
             "report_issue",
-            "Forward a defect or problem the guest reported so the host's incident flow handles it.",
+            "Forward a new defect or problem the guest reported so the host's incident flow handles "
+            "it. Not for a problem already listed in open_topics, unless it got worse.",
             ReportIssueArgs,
             report_issue,
         ),

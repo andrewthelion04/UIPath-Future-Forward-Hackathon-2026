@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,13 @@ def _incident(row: dict[str, Any]) -> Incident:
 class IncidentRepository:
     def __init__(self, db: Database) -> None:
         self._db = db
+        # Apelat după fiecare scriere a unui incident (serviciul își ține la zi starea publică).
+        self.on_change: Callable[[Incident], None] | None = None
+
+    def _changed(self, incident: Incident) -> Incident:
+        if self.on_change is not None:
+            self.on_change(incident)
+        return incident
 
     # --- Incidente ---------------------------------------------------------------------
 
@@ -111,7 +119,14 @@ class IncidentRepository:
         )
         incident = self.get(incident_id)
         assert incident is not None
-        return incident
+        return self._changed(incident)
+
+    def awaiting_guest_for_booking(self, booking_id: str) -> list[Incident]:
+        rows = self._db.query(
+            "SELECT * FROM f2_incidents WHERE booking_id = ? AND status = 'awaiting_guest'",
+            (booking_id,),
+        )
+        return [_incident(row) for row in rows]
 
     def update(self, incident_id: str, **fields: Any) -> Incident:
         if "drafts" in fields and isinstance(fields["drafts"], GuestDrafts):
@@ -128,7 +143,7 @@ class IncidentRepository:
         )
         incident = self.get(incident_id)
         assert incident is not None
-        return incident
+        return self._changed(incident)
 
     def with_deadline_before(self, column: str, status: str, moment: datetime) -> list[Incident]:
         assert column in {"staff_deadline", "guest_deadline"}

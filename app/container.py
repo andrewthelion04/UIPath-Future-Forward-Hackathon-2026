@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter
@@ -29,6 +30,8 @@ from app.core.conversation_log import ConversationLog
 from app.core.db import Database
 from app.core.event_bus import EventBus, Subscription
 from app.core.feature_context import FeatureContext
+from app.core.flow_story import FlowStories
+from app.core.guest_topics import GuestTopics
 from app.core.feature_loader import (
     FEATURES_PACKAGE,
     FeatureStatus,
@@ -73,6 +76,7 @@ class Container:
         self.ids = IdMapper(self.db)
         self.world = WorldRepository(self.db)
         self.conversations = ConversationLog(self.db)
+        self.guest_topics = GuestTopics(self.db, self.clock)
         self.notifications = NotificationService(self.db)
         self.bus = EventBus(self.db, default_timeout_s=settings.handler_timeout_s)
         self.bus.failure_hook = self._notify_handler_failure
@@ -103,6 +107,7 @@ class Container:
         self.market: MarketDataPort = overrides.get("market") or self._build_market()
 
         self.agent_trace = AgentTrace(self.db)
+        self.flows = FlowStories(self.db, self.world)
         self.agent = AgentRunner(
             self.llm,
             self.agent_trace,
@@ -114,6 +119,7 @@ class Container:
 
         # --- Feature-urile (auto-discovery) ----------------------------------------
         self.routers: list[APIRouter] = []
+        self._quiesce_hooks: list[Callable[[], Awaitable[None]]] = []
         self.init_schema()
         self.features: list[FeatureStatus] = load_features(
             self._make_feature_context,
@@ -217,6 +223,7 @@ class Container:
             calendar=self.calendar,
             world=self.world,
             conversations=self.conversations,
+            guest_topics=self.guest_topics,
             ids=self.ids,
             sync=self.sync,
             pms=self.pms,
@@ -227,6 +234,7 @@ class Container:
             agent=self.agent,
             _add_router=self.routers.append,
             _add_mock_policy=self._add_mock_policy,
+            _add_quiesce_hook=self._quiesce_hooks.append,
         )
 
     def _add_mock_policy(self, purpose: str, policy: MockPolicy) -> None:
@@ -250,6 +258,8 @@ class Container:
     def init_schema(self) -> None:
         """Creează tabelele lipsă: nucleu, lumea mock, adaptoare, feature-uri. Idempotent."""
         self.db.script(CORE_SCHEMA.read_text(encoding="utf-8"))
+        # Coloane adăugate după prima versiune: o bază locală veche le primește fără reseed.
+        self.db.ensure_column("properties", "listing_url", "TEXT")
         self.mock_world.init_schema()
         for port in (self.llm, self.reviews, self.market):  # ex. tabelul adaptorului Inside Airbnb
             init = getattr(port, "init_schema", None)
@@ -270,10 +280,25 @@ class Container:
         """Șterge tot și reface lumea din seed (folosit de `POST /sim/reset`)."""
         from app.seeding import seed_world
 
-        await self.bus.join(timeout=10)
+        # Munca lumii vechi nu are voie să scrie în cea nouă: așteptăm puțin, apoi oprim
+        # ce a rămas (ex. o analiză lungă) înainte să ștergem tabelele.
+        if not await self.bus.join(timeout=10):
+            stopped = await self.bus.cancel_running()
+            logger.warning("World reset: stopped %d handler(s) still running", stopped)
+        await self._quiesce()
+        await self.bus.cancel_running()  # ce au mai pornit hook-urile
         return await seed_world(self, reset=True)
 
+    async def _quiesce(self) -> None:
+        """Termină munca de fundal a feature-urilor (în afara event bus-ului)."""
+        for hook in self._quiesce_hooks:
+            try:
+                await hook()
+            except Exception:
+                logger.exception("A feature quiesce hook failed")
+
     async def shutdown(self) -> None:
+        await self._quiesce()
         await self.bus.shutdown()
         for closable in (*self.pms.all(), self.llm, self.reviews, self.market):
             close = getattr(closable, "aclose", None)

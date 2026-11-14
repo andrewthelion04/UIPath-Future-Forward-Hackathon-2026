@@ -65,6 +65,7 @@ navigation = st.navigation(
             st.Page(str(VIEWS / "notifications.py"), title=with_count("Notifications", unread), url_path="notifications", icon=":material/notifications:"),
         ],
         "Inspect": [
+            st.Page(str(VIEWS / "agent_dashboard.py"), title="Agent dashboard", url_path="agent-dashboard", icon=":material/monitoring:"),
             st.Page(str(VIEWS / "agent_timeline.py"), title="Agent timeline", icon=":material/timeline:"),
             st.Page(str(VIEWS / "events.py"), title="Events", icon=":material/bolt:"),
             st.Page(str(VIEWS / "world.py"), title="World data", icon=":material/database:"),

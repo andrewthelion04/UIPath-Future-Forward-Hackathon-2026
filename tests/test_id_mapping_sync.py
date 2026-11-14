@@ -63,7 +63,7 @@ async def test_repeated_sync_updates_the_same_records(container):
     report = await container.sync.sync("mock")
 
     assert (report.properties_created, report.bookings_created) == (0, 0)
-    assert (report.properties_updated, report.bookings_updated) == (4, 7)
+    assert (report.properties_updated, report.bookings_updated) == (6, 7)
     assert {p.id for p in container.world.list_properties()} == before_properties
     assert {b.id for b in container.world.list_bookings()} == before_bookings
     assert len(container.ids.list()) == mappings
@@ -132,7 +132,7 @@ async def test_sync_normalizes_another_connection_and_skips_orphans(container):
     booking = container.world.get_booking(container.ids.to_internal("hospitable", RESERVATION, "H-R1"))
     assert booking.property_id == property_id
     assert (booking.pms_provider, booking.source_channel) == ("hospitable", "airbnb")
-    assert len(container.world.list_properties()) == 5  # cele 4 din lumea mock rămân neatinse
+    assert len(container.world.list_properties()) == 7  # cele 6 din lumea mock rămân neatinse
 
 
 async def test_sync_of_a_disabled_connection_is_refused(container):

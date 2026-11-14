@@ -79,6 +79,8 @@ def build_router(service: IncidentService) -> APIRouter:
             )
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         return await finish(wait, ActionResult(status="published", detail=event.event_id))
 
     @router.post("/incidents/{incident_id}/staff-reply", response_model=ActionResult)
