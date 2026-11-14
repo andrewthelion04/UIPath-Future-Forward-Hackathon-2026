@@ -157,11 +157,16 @@ Verificări pe codul integrat:
 Push-ul HTTPS local a fost respins cu 403 pentru contul `mihaelatudor2211`.
 Conexiunea GitHub din aplicație, autentificată ca `PopanicaTudor`, raportează
 `push=true` în metadatele repository-ului, dar crearea efectivă a arborelui a fost
-respinsă tot cu 403: `Resource not accessible by integration`. **Publicarea este
-blocată de autorizare; `origin/main` nu a fost modificat.**
+respinsă tot cu 403: `Resource not accessible by integration`. Aceste încercări
+au fost blocate de autorizare și nu au modificat `origin/main`.
 
 Commiturile locale de integrare sunt păstrate pe `main` și în ramura
-`integration/f5-local-20261114`. După acordarea accesului de scriere sau configurarea
-unui cont Git autorizat, se poate relua cu `git pull --no-rebase origin main`,
-verificare dacă au apărut modificări noi, apoi `git push origin main`.
+`integration/f5-local-20261114`. Ulterior, utilizatorul a selectat contul corect,
+`milkaela`, prin reautentificare în browser. Setarea
+`credential.https://github.com.username=milkaela` este salvată doar în configurația
+Git locală a acestui repository, fără schimbarea celorlalte proiecte.
+
+După verificarea că remote-ul nu conține schimbări suplimentare, **`git push origin main`
+a reușit**, publicând integrarea de la `e4cf5fe` la `06ebaee`. Validarea de cod rămâne
+cea raportată mai sus: 513 teste, 8/8 scenarii mock, extensie și simulator.
 **Nu este necesar și nu s-a folosit force push.**
