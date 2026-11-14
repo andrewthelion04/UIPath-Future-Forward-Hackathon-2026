@@ -1,0 +1,13 @@
+{
+  "_comment": "Anunțuri Airbnb reale, comparabile cu proprietățile demo, din care Apify preia recenziile. Cheia = numele proprietății demo. Brasov Mountain View Loft nu are încă un anunț comparabil (toate cele primite sunt în București).",
+  "listings": {
+    "Old Town Studio": "https://www.airbnb.com/rooms/33615780",
+    "Calea Victoriei Apartment": "https://www.airbnb.com/rooms/36172401",
+    "Herastrau Family Flat": "https://www.airbnb.com/rooms/1063624740877318380"
+  },
+  "unused_candidates": [
+    "https://www.airbnb.com/rooms/1538655218312297751",
+    "https://www.airbnb.com/rooms/1572459639428350279",
+    "https://www.airbnb.com/rooms/1330605373645952305"
+  ]
+}

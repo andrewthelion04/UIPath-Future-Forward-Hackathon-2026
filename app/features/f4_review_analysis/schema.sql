@@ -21,3 +21,20 @@ CREATE TABLE IF NOT EXISTS f4_insights (
     agent_run_id    TEXT,
     created_at      TEXT NOT NULL
 );
+
+-- Recomandările structurate ale unei analize, câte una pe rând (temă, prioritate, acțiune, citate).
+-- Tabelă nouă, nu coloane noi în f4_insights: o bază de date existentă primește tabela la pornire
+-- (CREATE IF NOT EXISTS) fără migrare și fără `manage.py seed`.
+CREATE TABLE IF NOT EXISTS f4_recommendations (
+    id            TEXT PRIMARY KEY,
+    insight_id    TEXT NOT NULL,
+    property_id   TEXT NOT NULL,
+    position      INTEGER NOT NULL,
+    theme         TEXT NOT NULL,
+    theme_key     TEXT NOT NULL,
+    priority      TEXT NOT NULL,
+    priority_rank INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    quotes        TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_f4_recommendations_insight ON f4_recommendations (insight_id, priority_rank, position);

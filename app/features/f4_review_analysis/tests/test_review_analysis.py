@@ -37,7 +37,8 @@ def test_reviews_become_recommendations_for_the_host(client):
 
     run = client.get(f"/agent/runs/{insight['agent_run_id']}").json()
     tools = [s["tool_name"] for s in run["steps_detail"] if s["kind"] in ("tool", "finish")]
-    assert tools == ["get_rating_stats", "get_reviews", "finish"]
+    # Câte o recomandare per temă (Wi-Fi, Check-in, Noise), apoi finish.
+    assert tools == ["get_rating_stats", "get_reviews", *["add_recommendation"] * 3, "finish"]
     assert client.get("/approvals").json() == []  # recomandările sunt informative
 
 

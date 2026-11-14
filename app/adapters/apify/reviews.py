@@ -1,4 +1,9 @@
-"""Adaptorul real de recenzii: un actor Apify rulat sincron. Prima versiune, NETESTATĂ live.
+"""Adaptorul real de recenzii: un actor Apify rulat sincron.
+
+Verificat live în noiembrie 2026 cu actorul `tri_angle/airbnb-reviews-scraper`: câmpurile
+`id`, `rating`, `createdAt`, `reviewer.firstName`, `text` (limba originală) și `localizedText`
+(traducerea în limba din `locale`-ul inputului). Preferăm `localizedText`, ca toate recenziile
+să fie în aceeași limbă. Textul vine cu HTML (`<br/>`, entități), curățat aici.
 
 - `POST /v2/acts/{actor_id}/run-sync-get-dataset-items` cu inputul JSON al actorului;
 - ID-ul actorului și forma inputului vin din config, pentru că actorii diferă între ei;
@@ -13,7 +18,9 @@ Normalizarea câmpurilor e permisivă: fiecare actor își numește câmpurile a
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -62,8 +69,32 @@ def _date(value: Any) -> date | None:
             return None
 
 
+_BREAK = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def clean_text(value: Any) -> str | None:
+    """Text de recenzie fără HTML: `<br/>` devine rând nou, entitățile se decodează."""
+    if isinstance(value, dict):  # ex. `localizedReview: {"text": ..., "disclaimer": ...}`
+        value = value.get("text")
+    if not isinstance(value, str):
+        return None
+    text = html.unescape(_TAG.sub("", _BREAK.sub("\n", value)))
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line)
+    return text or None
+
+
 def normalize_review(item: dict[str, Any], property_id: str) -> Review | None:
-    text = _first(item, "text", "comments", "review", "localizedText", "localizedReview", "comment")
+    # Traducerea (în limba din `locale`) înaintea originalului: toate recenziile într-o limbă.
+    text = next(
+        (
+            cleaned
+            for key in ("localizedText", "localizedReview", "text", "comments", "review", "comment")
+            if (cleaned := clean_text(item.get(key)))
+        ),
+        None,
+    )
     rating = _first(item, "rating", "stars", "score")
     if not isinstance(text, str) or not isinstance(rating, int | float) or not 1 <= rating <= 5:
         return None
@@ -98,7 +129,9 @@ class ApifyReviewsAdapter:
             self._template = json.loads(input_template)
         except json.JSONDecodeError as exc:
             raise ValueError(f"APIFY_REVIEWS_INPUT_TEMPLATE is not valid JSON: {exc}") from exc
-        self._actor_id = actor_id
+        # În Store actorul apare ca `user/name` (ex. `tri_angle/airbnb-reviews-scraper`);
+        # în calea API-ului separatorul trebuie să fie `~`, altfel `/` rupe URL-ul.
+        self._actor_id = actor_id.strip().replace("/", "~")
         self._ids = ids
         self._timeout_s = timeout_s
         self._http = httpx.AsyncClient(
