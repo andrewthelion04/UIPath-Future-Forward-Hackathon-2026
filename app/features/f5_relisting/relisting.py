@@ -91,8 +91,10 @@ class Relisting:
                 ctx.db.execute(f"ALTER TABLE f5_relist_proposals ADD COLUMN {name} {definition}")
 
     def _now(self) -> datetime:
-        # FIXED_TODAY îngheață data demo, dar ora locală continuă să avanseze.
         local = self._ctx.clock.now().astimezone(self._timezone)
+        if self._ctx.settings.fixed_today is None:
+            return local
+        # Doar FIXED_TODAY înlocuiește data; în producție folosim data proprietății.
         return datetime.combine(self._ctx.clock.today(), local.time(), self._timezone)
 
     # --- Anulare -> propunere ------------------------------------------------------
@@ -110,7 +112,7 @@ class Relisting:
         if prop is None or booking is None or booking.property_id != prop.id or booking.status != "cancelled":
             return
         rules = ctx.world.host_rules()
-        today = ctx.clock.today()
+        today = self._now().date()
         start, end = max(event.check_in, today), event.check_out
         days_until = (event.check_in - today).days
 

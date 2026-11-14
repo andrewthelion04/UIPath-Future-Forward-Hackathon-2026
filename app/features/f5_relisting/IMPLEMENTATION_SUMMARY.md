@@ -123,5 +123,35 @@ cât și gzip. Snapshotul complet nu este necesar testelor.
 - Deciziile sunt documentate local F5 deoarece cerința interzice modificarea
   `docs/ARCHITECTURE.md` și a nucleului în această sarcină.
 
-Nu s-au creat commituri, nu s-a făcut push și nu s-a rescris istoricul Git.
-Modificările se integrează prin commit/merge obișnuit; **nu este necesar `git push --force`**.
+La livrarea inițială a fazei 1 nu s-au creat commituri și nu s-a făcut push.
+Integrarea ulterioară, cerută explicit, este descrisă mai jos; istoricul nu a fost rescris.
+
+## Integrare cu implementările F1–F4
+
+La 14 noiembrie 2026, modificările F5 au fost salvate în commitul `60ec270`, apoi
+`git pull --no-rebase origin main` a adus implementările colegilor până la `e4cf5fe`.
+Merge-ul `1c3f9a6` păstrează istoricul ambelor ramuri. Singurul conflict a fost în
+`.env.example`; au fost păstrate atât setările F1/F2, cât și setările F5. Fișierul
+local `.env`, secretele, bazele demo și arhiva completă Inside Airbnb rămân ignorate.
+
+Revizia înainte de publicare a identificat și corectat un caz de expirare lângă
+miezul nopții: fără `FIXED_TODAY`, data trebuie să provină din `F5_TIMEZONE`, nu din
+fusul orar al serverului. Două regresii acoperă București și Los Angeles, astfel
+încât diferența de zi față de UTC să nu întârzie sau să grăbească expirarea.
+
+Verificări pe codul integrat:
+
+- Suita completă inițială după merge: **511 teste trecute**; cele două regresii noi
+  de fus orar au trecut și separat. Rularea completă finală, incluzând corecția:
+  **513 teste trecute**, în 105,36 secunde.
+- Evaluatorul mock F3: **8/8 scenarii reușite**.
+- Extensia: `npm ci`, `npm run compile` și `npm run build` au trecut, fără modificarea
+  lockfile-ului; artefactul Chrome MV3 este în `extension/.output/chrome-mv3`.
+- API-ul și Streamlit au fost pornite separat pe porturile 8015/8515, cu bază izolată
+  și toate porturile pe mock. AppTest a parcurs prin HTTP real toate cele cinci fluxuri,
+  inclusiv cererea F3 repetată, mentenanța/oferta/acceptarea/închiderea separată din F2,
+  recomandările structurate și reutilizarea snapshotului F4, aprobarea și tarifele F5.
+  Paginile de audit s-au afișat fără erori și handlerii verificați au avut status `ok`.
+- `docs/DEMO.md` a fost adaptat fluxurilor F1–F4 actuale, păstrând pașii F5.
+
+Publicarea pe `main` folosește push obișnuit; **nu este necesar `git push --force`**.
